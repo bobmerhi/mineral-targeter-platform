@@ -3,7 +3,7 @@ import folium
 from streamlit_folium import st_folium
 from ibm_watsonx_ai import APIClient
 from ibm_watsonx_ai.foundation_models import ModelInference
-from georemote import fetch_and_calculate_spatz
+from georemote import fetch_and_calculate_spatz, get_real_mozambique_cadastre
 
 # ========================================================
 # 1. SECURE CONFIGURATION VIA STREAMLIT CLOUD SECRETS
@@ -28,47 +28,30 @@ def get_watsonx_client():
     return client
 
 # ========================================================
-# 2. SESSION STATE MANAGEMENT - MOZAMBIQUE GEOGRAPHIC FOCUS
+# 2. SESSION STATE ARBITRATION
 # ========================================================
-# Shifting default platform target coordinates directly to the Manica Gold Belt, Mozambique
 if "map_center" not in st.session_state:
-    st.session_state["map_center"] = [-18.9300, 32.8800]
+    st.session_state["map_center"] = [-15.8000, 33.6000] # Set to Tete Mining Concession Region
 if "active_polygon" not in st.session_state:
     st.session_state["active_polygon"] = None
 if "concession_metadata" not in st.session_state:
     st.session_state["concession_metadata"] = {
-        "Código da Licença (Code)": "Default Grid - MZ",
-        "Nome da Concessão": "Manica Goldfield Block Baseline",
-        "Titular (Holder Company)": "Explorações de Moçambique Lda",
-        "Área / Dimensão": "4,120 Hectares (Ha)",
-        "Data de Emissão": "2020-04-10",
-        "Data de Validade (Expiry)": "2035-04-10",
-        "Tipo de Direito / Estado": "Concessão Mineira Activa (Active)"
-    }
-
-def create_mock_polygon(lat, lon, size=0.02):
-    """Generates a standard bounding box polygon localized for Mozambique coordinates."""
-    return {
-        "type": "Feature",
-        "properties": {"name": "Mozambique Cadastre Polygon"},
-        "geometry": {
-            "type": "Polygon",
-            "coordinates": [[
-                [lon - size, lat - size],
-                [lon + size, lat - size],
-                [lon + size, lat + size],
-                [lon - size, lat + size],
-                [lon - size, lat - size]
-            ]]
-        }
+        "Código da Licença (Code)": "Digite uma Licença Valida",
+        "Nome da Concessão": "Aguardando Consulta",
+        "Titular (Holder Company)": "Aguardando Banco de Dados Real",
+        "Área / Dimensão": "0.00 Ha",
+        "Data de Emissão": "N/A",
+        "Data de Validade (Expiry)": "N/A",
+        "Tipo de Direito / Estado": "N/A",
+        "Substâncias": "N/A"
     }
 
 # ========================================================
-# 3. SIDEBAR PARAMETERS & RE-ROUTED LOOKUPS
+# 3. INTERFACE BUILDER & LIVE DATABASE SWITCHER
 # ========================================================
-st.set_page_config(page_title="SatIntel Moçambique AI", layout="wide")
-st.title("🛰️ SatIntel: Mozambique Mining Cadastre & 5-Way Gold Targeting Portal")
-st.caption("Synchronized with Landfolio MIREME Structural Registry Standards")
+st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
+st.title("🛰️ SatIntel: Mozambique Mining Cadastre Real-Time Platform")
+st.caption("Live Production Database Synchronization with Landfolio MIREME REST API Servers")
 
 st.sidebar.header("🎯 Portal de Seleção de Alvos")
 
@@ -78,105 +61,48 @@ selected_basemap = st.sidebar.selectbox(
 )
 
 selected_year = st.sidebar.slider("Select Analysis Year", min_value=1990, max_value=2026, value=2024, step=1)
+search_method = st.sidebar.radio("Select Landfolio Lookup Method", ["(a) License # Search", "(c) Map Selection"])
 
-search_method = st.sidebar.radio(
-    "Select Landfolio Lookup Method",
-    ["(a) License # Search", "(b) Name Search", "(c) Map Selection", "(d) File Upload"]
-)
-
-# Updating the query simulations to load realistic Mozambique cadastre records
 if search_method == "(a) License # Search":
-    license_num = st.sidebar.text_input("Enter License Number (Exact Match)", placeholder="e.g., 10425CM")
+    license_num = st.sidebar.text_input("Enter License Number (Real Database Match)", placeholder="e.g., 11521")
     if license_num:
-        # Panning map directly into Mozambique gold belt anomalies
-        st.session_state["map_center"] = [-18.9150, 32.8900]
-        st.session_state["active_polygon"] = create_mock_polygon(-18.9150, 32.8900, size=0.015)
-        st.session_state["concession_metadata"] = {
-            "Código da Licença (Code)": license_num,
-            "Nome da Concessão": f"Projecto Ouro Manica {license_num}",
-            "Titular (Holder Company)": "Minerais de Manica Prospecção S.A.",
-            "Área / Dimensão": "3,890 Ha",
-            "Data de Emissão": "2022-01-14",
-            "Data de Validade (Expiry)": "2037-01-14",
-            "Tipo de Direito / Estado": "Licença de Prospecção e Pesquisa"
-        }
-        st.sidebar.success("✓ Licença Carregada")
-
-elif search_method == "(b) Name Search":
-    name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., Kenmare or local corp")
-    if name_query:
-        st.session_state["map_center"] = [-18.9450, 32.8600]
-        st.session_state["active_polygon"] = create_mock_polygon(-18.9450, 32.8600, size=0.025)
-        st.session_state["concession_metadata"] = {
-            "Código da Licença (Code)": "8941CM",
-            "Nome da Concessão": f"Anomalia Norte ({name_query} Joint Venture)",
-            "Titular (Holder Company)": f"{name_query} Moçambique Mineração Lda",
-            "Área / Dimensão": "8,450 Ha",
-            "Data de Emissão": "2019-11-20",
-            "Data de Validade (Expiry)": "2034-11-20",
-            "Tipo de Direito / Estado": "Concessão Mineira outorgada"
-        }
-        st.sidebar.success("✓ Titular Encontrado")
+        with st.sidebar.spinner("Buscando dados em tempo real no Cadastro Nacional..."):
+            db_result = get_real_mozambique_cadastre(license_num)
+            
+            if db_result["found"]:
+                st.session_state["map_center"] = [db_result["lat"], db_result["lon"]]
+                st.session_state["active_polygon"] = db_result["polygon"]
+                st.session_state["concession_metadata"] = db_result["metadata"]
+                st.sidebar.success(f"✓ Concessão {license_num} encontrada e desenhada!")
+            else:
+                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada nos servidores governamentais.")
 
 elif search_method == "(c) Map Selection":
-    st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para executar uma consulta espacial no cadastro.")
-
-elif search_method == "(d) File Upload":
-    uploaded_file = st.sidebar.file_uploader("Upload Boundary (GeoJSON, KML)", type=["geojson", "kml"])
-    if uploaded_file is not None:
-        st.session_state["map_center"] = [-18.9200, 32.8700]
-        st.session_state["active_polygon"] = create_mock_polygon(-18.9200, 32.8700, size=0.03)
-        st.session_state["concession_metadata"] = {
-            "Código da Licença (Code)": "MZ-IMPORT-SHP",
-            "Nome da Concessão": str(uploaded_file.name).upper(),
-            "Titular (Holder Company)": "Camada Importada pelo Utilizador",
-            "Área / Dimensão": "1,200 Ha",
-            "Data de Emissão": "N/A",
-            "Data de Validade (Expiry)": "Pendente",
-            "Tipo de Direito / Estado": "Polígono Personalizado Local"
-        }
-        st.sidebar.success("✓ Boundary Loaded")
+    st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para capturar as coordenadas reais do terreno.")
 
 st.sidebar.divider()
-target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Heavy Mineral Sands", "Diamonds"])
+target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Lithium", "Heavy Mineral Sands", "Emeralds"])
 
 # ========================================================
-# 4. INTERACTIVE MAPPING WITH CUSTOM TILES CONTROLLER
+# 4. MAP AND REAL METADATA RENDERING
 # ========================================================
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🗺️ Portal de Cadastro Mineiro de Moçambique")
+    st.subheader("🗺️ Live Geographic Registry View")
     
     if selected_basemap == "Google Satellite Imagery":
-        m = folium.Map(
-            location=st.session_state["map_center"], 
-            zoom_start=12,
-            tiles="https://google.com{x}&y={y}&z={z}",
-            attr="Google Satellite"
-        )
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=11, tiles="https://google.com{x}&y={y}&z={z}", attr="Google Satellite")
     elif selected_basemap == "Esri Topographic Map":
-        m = folium.Map(
-            location=st.session_state["map_center"], 
-            zoom_start=12,
-            tiles="https://arcgisonline.com{z}/{y}/{x}",
-            attr="Esri Topo Map"
-        )
-    elif selected_basemap == "Stamen Terrain":
-        m = folium.Map(location=st.session_state["map_center"], zoom_start=12, tiles="stamenterrain")
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=11, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri Topo Map")
     else:
-        m = folium.Map(location=st.session_state["map_center"], zoom_start=12)
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=11)
         
     if st.session_state["active_polygon"]:
         folium.GeoJson(
             st.session_state["active_polygon"],
-            name="Concession Boundary",
-            style_function=lambda x: {
-                "fillColor": "#FFD700",
-                "color": "#FF4B4B",
-                "weight": 3,
-                "fillOpacity": 0.35,
-            }
+            name="Real Concession Boundary",
+            style_function=lambda x: {"fillColor": "#00E5FF", "color": "#004D40", "weight": 3, "fillOpacity": 0.4}
         ).add_to(m)
         
     map_data = st_folium(m, width=550, height=380, key=f"map_{selected_basemap}_{st.session_state['map_center']}")
@@ -184,30 +110,30 @@ with col1:
     if search_method == "(c) Map Selection" and map_data and map_data.get("last_clicked"):
         click_point = map_data["last_clicked"]
         lat, lng = click_point["lat"], click_point["lng"]
-        
         st.session_state["map_center"] = [lat, lng]
-        st.session_state["active_polygon"] = create_mock_polygon(lat, lng, size=0.012)
+        st.session_state["active_polygon"] = None
         st.session_state["concession_metadata"] = {
-            "Código da Licença (Code)": f"MZ_LT:{lat:.2f}_LG:{lng:.2f}",
-            "Nome da Concessão": f"Zona de Descoberta Espacial ({lat:.3f}S)",
-            "Titular (Holder Company)": "Ministério dos Recursos Minerais e Energia",
-            "Área / Dimensão": "2,150 Ha",
-            "Data de Emissão": "2026-07-24",
-            "Data de Validade (Expiry)": "2040-12-31",
-            "Tipo de Direito / Estado": "Área Livre para Requerimento"
+            "Código da Licença (Code)": "Coordenadas Manuais",
+            "Nome da Concessão": f"Ponto de Interesse ({lat:.4f}S)",
+            "Titular (Holder Company)": "Exploração de Campo Directa",
+            "Área / Dimensão": "Calculando...",
+            "Data de Emissão": "N/A",
+            "Data de Validade (Expiry)": "N/A",
+            "Tipo de Direito / Estado": "Área de Pesquisa Livre",
+            "Substâncias": "Alvo Selecionado Manualmente"
         }
         st.rerun()
 
-    st.write("### 📋 Registo do Cadastro de Minas (Landfolio)")
+    st.write("### 📋 Registo Oficial em Tempo Real (Trimble Landfolio)")
     st.table(st.session_state["concession_metadata"])
 
 # ========================================================
-# 5. REMOTE SENSING DATA ENGINE & AI RUNTIME
+# 5. REMOTE SENSING TARGET CHANNELS & IBM ENGINE
 # ========================================================
 with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
     
-    with st.spinner("Processing multispectral imagery stack..."):
+    with st.spinner("Processing multi-spectral analytics over target concession..."):
         m_data = fetch_and_calculate_spatz(st.session_state["map_center"][0], st.session_state["map_center"][1], selected_year)
     
     st.markdown("#### **WAY 1: Hydrothermal Alteration**")
@@ -221,3 +147,25 @@ with col2:
     st.markdown("#### **WAY 3: Lithological Silicification**")
     st.metric("Quartz Veining Emissivity", m_data["Way_3_Silica_Flooding_Cap"])
     
+    st.markdown("#### **WAY 4: Geobotanical Stress**")
+    st.metric("Vegetation Stress Proxy (NDVI)", m_data["Way_4_Geobotanical_Stress"])
+    
+    st.markdown("#### **WAY 5: GIS Predictive Synthesis**")
+    st.metric("WLC Prospectivity Target Score", f"{m_data['Way_5_WLC_Score_Percent']}%")
+    st.caption(f"🛰️ Source Pipeline ID: {m_data['Satellite_Used']}")
+    st.divider()
+    
+    if st.button("🚀 Generate 5-Way Geological Synthesis"):
+        with st.spinner("watsonx.ai is correlating all matrices..."):
+            client = get_watsonx_client()
+            meta = st.session_state["concession_metadata"]
+            
+            p1 = "[Role: Senior Exploration Geologist Expert in Mozambique Metallurgy]\nEvaluate remote sensing values for " + str(target_commodity) + " at coordinates " + str(st.session_state['map_center']) + " for year " + str(selected_year) + ".\n\n"
+            p2 = "Mozambique Landfolio Cadastre Record:\n- License Code: " + str(meta['Código da Licença (Code)']) + "\n- Concession Name: " + str(meta['Nome da Concessão']) + "\n- Registered Operator: " + str(meta['Titular (Holder Company)']) + "\n- Size Layer: " + str(meta['Área / Dimensão']) + "\n- Expiry: " + str(meta['Data de Validade (Expiry)']) + "\n- Status: " + str(meta['Tipo de Direito / Estado']) + "\n- Listed Substances: " + str(meta['Substâncias']) + "\n\n"
+            p3 = "Telemetry Matrix:\n- Iron Oxide: " + str(m_data['Way_1_Iron_Oxide_Gossan']) + ", Clay: " + str(m_data['Way_1_Clay_Phyllic']) + "\n- Structural Fault Density: " + str(m_data['Way_2_Fault_Density_Index']) + "\n- Silicification Cap: " + str(m_data['Way_3_Silica_Flooding_Cap']) + "\n- Vegetation Shift: " + str(m_data['Way_4_Geobotanical_Stress']) + "\n- WLC Score: " + str(m_data['Way_5_WLC_Score_Percent']) + "%\n\n"
+            p4 = "Task:\nWrite a technical appraisal evaluating the target within the framework of Mozambican geology. Detail field investigation protocols near these concessions based on the target commodities listed."
+            
+            complete_prompt = p1 + p2 + p3 + p4
+            
+            model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
+            st.markdown(model.generate_text(prompt=complete_prompt))
