@@ -5,63 +5,95 @@ from ibm_watsonx_ai import APIClient
 from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import fetch_and_calculate_spatz
 
-# 1. Credentials with your working Cloud Pak bypass fix
-IBM_API_KEY = "B_Nz4kWw4scaybtZaZfWi6NEFh-DiPRhZshIxVJm2cP"
-PROJECT_ID = "c5ab169c-a585-44aa-829f-e33463e67ed9"
+# ========================================================
+# 1. SECURE CONFIGURATION VIA STREAMLIT CLOUD SECRETS
+# ========================================================
+# Streamlit will look for these variables in your "Advanced Settings -> Secrets" panel
+try:
+    IBM_API_KEY = st.secrets["IBM_API_KEY"]
+    PROJECT_ID = st.secrets["PROJECT_ID"]
+except KeyError:
+    st.error("🔒 Streamlit Secrets missing! Please add 'IBM_API_KEY' and 'PROJECT_ID' to your Cloud Advanced Settings panel.")
+    st.stop()
+
 credentials = {
     "url": "https://ibm.com",
     "apikey": IBM_API_KEY,
-    "token_type": "Bearer" 
+    "token_type": "Bearer" # Bypasses the Cloud Pak version checking error
 }
 
-st.set_page_config(page_title="GeoTarget AI", layout="wide")
-st.title("🌋 GeoTarget AI: Mineral Exploration Platform")
+# Cache client connection to improve platform loading speeds
+@st.cache_resource
+def get_watsonx_client():
+    client = APIClient(credentials)
+    client.set.default_project(PROJECT_ID)
+    return client
 
-# Sidebar Configuration
+# ========================================================
+# 2. PLATFORM FRONTEND INTERFACE
+# ========================================================
+st.set_page_config(page_title="GeoTarget AI Platform", layout="wide")
+
+st.title("🌋 GeoTarget AI: Mineral & Gem Exploration Platform")
+st.caption("Powered by IBM watsonx.ai & Automated Remote Sensing Engines")
+
+# Sidebar - User Inputs
 st.sidebar.header("🎯 Exploration Controls")
-target_commodity = st.sidebar.selectbox("Commodity", ["Gold", "Copper", "Emeralds", "Diamonds"])
+target_commodity = st.sidebar.selectbox("Select Target Commodity", ["Gold", "Copper", "Emeralds", "Diamonds"])
 
-# DYNAMIC DATES PANEL (The timeline slider you requested)
+# DYNAMIC DATES PANEL (Historical Timeline Control)
 selected_year = st.sidebar.slider("Select Analysis Year", min_value=1990, max_value=2026, value=2024, step=1)
 
+# Target Location Coordinates
+st.sidebar.subheader("📍 Target Area Location")
 target_lat = st.sidebar.number_input("Latitude", value=-23.5505, format="%.5f")
 target_lon = st.sidebar.number_input("Longitude", value=46.6333, format="%.5f")
 
+# Split Dashboard Layout into 2 Functional Columns
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader(f"🗺️ Target Mapping Location ({selected_year})")
+    # Generate interactive terrain map
     m = folium.Map(location=[target_lat, target_lon], zoom_start=11)
-    folium.Marker([target_lat, target_lon], popup=f"Target ({selected_year})", icon=folium.Icon(color='red')).add_to(m)
+    folium.Marker([target_lat, target_lon], popup=f"Target Coordinates ({selected_year})", icon=folium.Icon(color='red', icon='bolt')).add_to(m)
     st_folium(m, width=550, height=400)
+    st.info(f"💡 Tip: Use the Timeline Slider in the sidebar to view metrics across different years.")
 
 with col2:
-    st.subheader(f"📊 Spatz Spectral Processing ({selected_year})")
+    st.subheader(f"📊 Spatz Spectral Processing Metrics ({selected_year})")
     
-    # Run the real remote sensing pipeline
-    metrics = fetch_and_calculate_spatz(target_lat, target_lon, selected_year)
+    # Run the background remote sensing pipeline
+    with st.spinner("Analyzing multi-spectral imagery..."):
+        metrics = fetch_and_calculate_spatz(target_lat, target_lon, selected_year)
     
+    # Display calculated Spatz ratios visually to user
     c1, c2, c3 = st.columns(3)
     c1.metric("Iron Oxide (Gossan)", metrics["Iron_Oxide_Ratio_Spatz"])
     c2.metric("Clay/Hydroxyl Ratio", metrics["Clay_Hydroxyl_Ratio"])
     c3.metric("Silicification Index", metrics["Silicification_Index"])
-    st.caption(f"Source Data: {metrics['Satellite_Used']}")
+    st.caption(f"🛰️ Source Dataset Catalog: {metrics['Satellite_Used']}")
     
     st.divider()
+    st.subheader("🤖 watsonx.ai Automated Geological Assessment")
     
-    if st.button("▶ Run AI Geological Assessment"):
-        with st.spinner("watsonx.ai is interpreting remote sensing layers..."):
-            client = APIClient(credentials)
-            client.set.default_project(PROJECT_ID)
+    # Trigger button to activate the AI Agent
+    if st.button("▶ Run AI Prospectivity Assessment"):
+        with st.spinner("watsonx.ai Granite model is interpreting alteration telemetry..."):
+            client = get_watsonx_client()
             
             prompt = f"""
-            [Role: Expert Exploration Geologist]
-            Evaluate these Spatz remote sensing values for {target_commodity} mineralization at coordinates {target_lat}, {target_lon} for the year {selected_year}:
-            - Iron Oxide: {metrics['Iron_Oxide_Ratio_Spatz']}
-            - Clay: {metrics['Clay_Hydroxyl_Ratio']}
-            - Silicification: {metrics['Silicification_Index']}
-            Provide a clear, brief technical recommendation for ground-truthing based on these values.
+            [Role: Senior Exploration Geologist & Remote Sensing Specialist]
+            
+            Evaluate these Spatz remote sensing values for {target_commodity} mineralization at coordinates ({target_lat}, {target_lon}) for the historical target year {selected_year}:
+            - Iron Oxide / Ferric Index: {metrics['Iron_Oxide_Ratio_Spatz']}
+            - Clay / Hydroxyl Index: {metrics['Clay_Hydroxyl_Ratio']}
+            - Silicification Indicator: {metrics['Silicification_Index']}
+            
+            Task:
+            Provide a brief, technical, and highly practical geological report explaining what structural or alteration anomalies these indicators represent. Suggest specific next steps for ground-truthing or field sampling.
             """
             
             model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
-            st.markdown(model.generate_text(prompt=prompt))
+            ai_report = model.generate_text(prompt=prompt)
+            st.markdown(ai_report)
