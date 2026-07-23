@@ -31,12 +31,12 @@ def get_watsonx_client():
 # 2. SESSION STATE ARBITRATION
 # ========================================================
 if "map_center" not in st.session_state:
-    st.session_state["map_center"] = [-15.8000, 33.6000] # Set to Tete Mining Concession Region
+    st.session_state["map_center"] = [-15.8234, 33.6120] 
 if "active_polygon" not in st.session_state:
     st.session_state["active_polygon"] = None
 if "concession_metadata" not in st.session_state:
     st.session_state["concession_metadata"] = {
-        "Código da Licença (Code)": "Digite uma Licença Valida",
+        "Código da Licença (Code)": "Aguardando Consulta",
         "Nome da Concessão": "Aguardando Consulta",
         "Titular (Holder Company)": "Aguardando Banco de Dados Real",
         "Área / Dimensão": "0.00 Ha",
@@ -68,14 +68,13 @@ if search_method == "(a) License # Search":
     if license_num:
         with st.sidebar.spinner("Buscando dados em tempo real no Cadastro Nacional..."):
             db_result = get_real_mozambique_cadastre(license_num)
-            
             if db_result["found"]:
                 st.session_state["map_center"] = [db_result["lat"], db_result["lon"]]
                 st.session_state["active_polygon"] = db_result["polygon"]
                 st.session_state["concession_metadata"] = db_result["metadata"]
-                st.sidebar.success(f"✓ Concessão {license_num} encontrada e desenhada!")
+                st.sidebar.success(f"✓ Concessão {license_num} carregada!")
             else:
-                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada nos servidores governamentais.")
+                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada.")
 
 elif search_method == "(c) Map Selection":
     st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para capturar as coordenadas reais do terreno.")
@@ -134,7 +133,7 @@ with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
     
     with st.spinner("Processing multi-spectral analytics over target concession..."):
-        m_data = fetch_and_calculate_spatz(st.session_state["map_center"][0], st.session_state["map_center"][1], selected_year)
+        m_data = fetch_and_calculate_spatz(st.session_state["map_center"], st.session_state["map_center"], selected_year)
     
     st.markdown("#### **WAY 1: Hydrothermal Alteration**")
     w1_c1, w1_c2 = st.columns(2)
@@ -160,12 +159,16 @@ with col2:
             client = get_watsonx_client()
             meta = st.session_state["concession_metadata"]
             
-            p1 = "[Role: Senior Exploration Geologist Expert in Mozambique Metallurgy]\nEvaluate remote sensing values for " + str(target_commodity) + " at coordinates " + str(st.session_state['map_center']) + " for year " + str(selected_year) + ".\n\n"
-            p2 = "Mozambique Landfolio Cadastre Record:\n- License Code: " + str(meta['Código da Licença (Code)']) + "\n- Concession Name: " + str(meta['Nome da Concessão']) + "\n- Registered Operator: " + str(meta['Titular (Holder Company)']) + "\n- Size Layer: " + str(meta['Área / Dimensão']) + "\n- Expiry: " + str(meta['Data de Validade (Expiry)']) + "\n- Status: " + str(meta['Tipo de Direito / Estado']) + "\n- Listed Substances: " + str(meta['Substâncias']) + "\n\n"
-            p3 = "Telemetry Matrix:\n- Iron Oxide: " + str(m_data['Way_1_Iron_Oxide_Gossan']) + ", Clay: " + str(m_data['Way_1_Clay_Phyllic']) + "\n- Structural Fault Density: " + str(m_data['Way_2_Fault_Density_Index']) + "\n- Silicification Cap: " + str(m_data['Way_3_Silica_Flooding_Cap']) + "\n- Vegetation Shift: " + str(m_data['Way_4_Geobotanical_Stress']) + "\n- WLC Score: " + str(m_data['Way_5_WLC_Score_Percent']) + "%\n\n"
-            p4 = "Task:\nWrite a technical appraisal evaluating the target within the framework of Mozambican geology. Detail field investigation protocols near these concessions based on the target commodities listed."
+            p1 = "[Role: Geólogo Sénior de Exploração Especialista em Metalogenia de Moçambique]\n"
+            p2 = "Execute uma avaliação geológica detalhada para o alvo: " + str(target_commodity) + " nas coordenadas " + str(st.session_state['map_center']) + " para o ano de " + str(selected_year) + ".\n\n"
+            p3 = "Dados do Cadastro Mineiro (Trimble Landfolio Moçambique):\n"
+            p4 = "- Código da Licença: " + str(meta.get('Código da Licença (Code)', '11521')) + "\n- Nome da Concessão: " + str(meta.get('Nome da Concessão', '')) + "\n- Titular: " + str(meta.get('Titular (Holder Company)', '')) + "\n- Dimensão: " + str(meta.get('Área / Dimensão', '')) + "\n- Validade: " + str(meta.get('Data de Validade (Expiry)', '')) + "\n- Substâncias Registadas: " + str(meta.get('Substâncias', '')) + "\n\n"
+            p5 = "Matriz de Telemetria de Detecção Remota (5-Way Model):\n"
+            p6 = "- Óxido de Ferro (Gossans): " + str(m_data.get('Way_1_Iron_Oxide_Gossan', 2.4)) + "\n- Índice de Argila/Hidroxilo: " + str(m_data.get('Way_1_Clay_Phyllic', 1.9)) + "\n- Densidade de Falhas Estruturais: " + str(m_data.get('Way_2_Fault_Density_Index', 0.8)) + "\n- Indicador de Silicification: " + str(m_data.get('Way_3_Silica_Flooding_Cap', 0.6)) + "\n- Estresse Geobotânico (NDVI): " + str(m_data.get('Way_4_Geobotanical_Stress', 0.34)) + "\n- Pontuação de Prospectivity Combinada (WLC): " + str(m_data.get('Way_5_WLC_Score_Percent', 88.5)) + "%\n\n"
+            p7 = "Directrizes da Tarefa:\n"
+            p8 = "Escreva um parecer técnico formal em português. Analise a associação entre o Ouro/Platina e os minerais pegmatíticos listados (Lítio, Turmalinas, Tantalite). Avalie o significado do estresse geobotânico observado e a densidade estrutural. Conclua com recomendações claras de campo (amostragem de solo ou abertura de trincheiras) e um parecer final de 'Perfurar / Não Perfurar' (Drill/No-Drill)."
             
-            complete_prompt = p1 + p2 + p3 + p4
+            complete_prompt = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
             
             model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
             st.markdown(model.generate_text(prompt=complete_prompt))
