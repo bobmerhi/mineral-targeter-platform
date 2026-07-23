@@ -28,28 +28,29 @@ def get_watsonx_client():
     return client
 
 # ========================================================
-# 2. SESSION STATE MANAGEMENT FOR METADATA & GEOMETRIES
+# 2. SESSION STATE MANAGEMENT - MOZAMBIQUE GEOGRAPHIC FOCUS
 # ========================================================
+# Shifting default platform target coordinates directly to the Manica Gold Belt, Mozambique
 if "map_center" not in st.session_state:
-    st.session_state["map_center"] = [-23.5505, 46.6333]
+    st.session_state["map_center"] = [-18.9300, 32.8800]
 if "active_polygon" not in st.session_state:
     st.session_state["active_polygon"] = None
 if "concession_metadata" not in st.session_state:
     st.session_state["concession_metadata"] = {
-        "License ID": "Default Grid",
-        "Concession Name": "Baseline Exploration Block Alpha",
-        "Holder / Operator": "Global Minerals Ltd",
-        "Size (Hectares)": "2,450 Ha",
-        "Grant Date": "2018-05-12",
-        "Expiry Date": "2032-12-31",
-        "Status": "Active Operational License"
+        "Código da Licença (Code)": "Default Grid - MZ",
+        "Nome da Concessão": "Manica Goldfield Block Baseline",
+        "Titular (Holder Company)": "Explorações de Moçambique Lda",
+        "Área / Dimensão": "4,120 Hectares (Ha)",
+        "Data de Emissão": "2020-04-10",
+        "Data de Validade (Expiry)": "2035-04-10",
+        "Tipo de Direito / Estado": "Concessão Mineira Activa (Active)"
     }
 
 def create_mock_polygon(lat, lon, size=0.02):
-    """Generates a standard GeoJSON polygon surrounding target coordinates."""
+    """Generates a standard bounding box polygon localized for Mozambique coordinates."""
     return {
         "type": "Feature",
-        "properties": {"name": "Concession Area Boundary"},
+        "properties": {"name": "Mozambique Cadastre Polygon"},
         "geometry": {
             "type": "Polygon",
             "coordinates": [[
@@ -63,12 +64,13 @@ def create_mock_polygon(lat, lon, size=0.02):
     }
 
 # ========================================================
-# 3. SIDEBAR PARAMETERS & BASEMAP SELECTOR
+# 3. SIDEBAR PARAMETERS & RE-ROUTED LOOKUPS
 # ========================================================
-st.set_page_config(page_title="SatIntel AI Gold Platform", layout="wide")
-st.title("🛰️ SatIntel: Comprehensive 5-Way Gold Exploration Hub")
+st.set_page_config(page_title="SatIntel Moçambique AI", layout="wide")
+st.title("🛰️ SatIntel: Mozambique Mining Cadastre & 5-Way Gold Targeting Portal")
+st.caption("Synchronized with Landfolio MIREME Structural Registry Standards")
 
-st.sidebar.header("🎯 Target Selection Menu")
+st.sidebar.header("🎯 Portal de Seleção de Alvos")
 
 selected_basemap = st.sidebar.selectbox(
     "🗺️ Select Map Layer View",
@@ -82,59 +84,61 @@ search_method = st.sidebar.radio(
     ["(a) License # Search", "(b) Name Search", "(c) Map Selection", "(d) File Upload"]
 )
 
+# Updating the query simulations to load realistic Mozambique cadastre records
 if search_method == "(a) License # Search":
-    license_num = st.sidebar.text_input("Enter License Number (Exact Match)", placeholder="e.g., L-4095-X")
+    license_num = st.sidebar.text_input("Enter License Number (Exact Match)", placeholder="e.g., 10425CM")
     if license_num:
-        st.session_state["map_center"] = [-23.5400, 46.6200]
-        st.session_state["active_polygon"] = create_mock_polygon(-23.5400, 46.6200, size=0.015)
+        # Panning map directly into Mozambique gold belt anomalies
+        st.session_state["map_center"] = [-18.9150, 32.8900]
+        st.session_state["active_polygon"] = create_mock_polygon(-18.9150, 32.8900, size=0.015)
         st.session_state["concession_metadata"] = {
-            "License ID": license_num,
-            "Concession Name": f"Gold Strike Zone {license_num}",
-            "Holder / Operator": "Barrick Gold Exploration Corp",
-            "Size (Hectares)": "5,120 Ha",
-            "Grant Date": "2021-01-15",
-            "Expiry Date": "2036-06-30",
-            "Status": "Granted Exploration Phase"
+            "Código da Licença (Code)": license_num,
+            "Nome da Concessão": f"Projecto Ouro Manica {license_num}",
+            "Titular (Holder Company)": "Minerais de Manica Prospecção S.A.",
+            "Área / Dimensão": "3,890 Ha",
+            "Data de Emissão": "2022-01-14",
+            "Data de Validade (Expiry)": "2037-01-14",
+            "Tipo de Direito / Estado": "Licença de Prospecção e Pesquisa"
         }
-        st.sidebar.success("✓ License Loaded")
+        st.sidebar.success("✓ Licença Carregada")
 
 elif search_method == "(b) Name Search":
-    name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., Newmont")
+    name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., Kenmare or local corp")
     if name_query:
-        st.session_state["map_center"] = [-23.5600, 46.6500]
-        st.session_state["active_polygon"] = create_mock_polygon(-23.5600, 46.6500, size=0.025)
+        st.session_state["map_center"] = [-18.9450, 32.8600]
+        st.session_state["active_polygon"] = create_mock_polygon(-18.9450, 32.8600, size=0.025)
         st.session_state["concession_metadata"] = {
-            "License ID": "L-9921-B",
-            "Concession Name": f"Prospect Ridge ({name_query} Match)",
-            "Holder / Operator": f"{name_query} Joint Venture Group",
-            "Size (Hectares)": "12,840 Ha",
-            "Grant Date": "2015-08-22",
-            "Expiry Date": "2030-08-22",
-            "Status": "Production Lease Option"
+            "Código da Licença (Code)": "8941CM",
+            "Nome da Concessão": f"Anomalia Norte ({name_query} Joint Venture)",
+            "Titular (Holder Company)": f"{name_query} Moçambique Mineração Lda",
+            "Área / Dimensão": "8,450 Ha",
+            "Data de Emissão": "2019-11-20",
+            "Data de Validade (Expiry)": "2034-11-20",
+            "Tipo de Direito / Estado": "Concessão Mineira outorgada"
         }
-        st.sidebar.success("✓ Operator Found")
+        st.sidebar.success("✓ Titular Encontrado")
 
 elif search_method == "(c) Map Selection":
-    st.sidebar.info("👉 Click anywhere on the map to query the underlying Landfolio database block.")
+    st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para executar uma consulta espacial no cadastro.")
 
 elif search_method == "(d) File Upload":
     uploaded_file = st.sidebar.file_uploader("Upload Boundary (GeoJSON, KML)", type=["geojson", "kml"])
     if uploaded_file is not None:
-        st.session_state["map_center"] = [-23.5300, 46.6100]
-        st.session_state["active_polygon"] = create_mock_polygon(-23.5300, 46.6100, size=0.03)
+        st.session_state["map_center"] = [-18.9200, 32.8700]
+        st.session_state["active_polygon"] = create_mock_polygon(-18.9200, 32.8700, size=0.03)
         st.session_state["concession_metadata"] = {
-            "License ID": "UPLOADED-TEMP-01",
-            "Concession Name": str(uploaded_file.name).upper(),
-            "Holder / Operator": "User Imported Layer",
-            "Size (Hectares)": "3,110 Ha",
-            "Grant Date": "N/A",
-            "Expiry Date": "Pending Review",
-            "Status": "Custom Local Polygon Layer"
+            "Código da Licença (Code)": "MZ-IMPORT-SHP",
+            "Nome da Concessão": str(uploaded_file.name).upper(),
+            "Titular (Holder Company)": "Camada Importada pelo Utilizador",
+            "Área / Dimensão": "1,200 Ha",
+            "Data de Emissão": "N/A",
+            "Data de Validade (Expiry)": "Pendente",
+            "Tipo de Direito / Estado": "Polígono Personalizado Local"
         }
         st.sidebar.success("✓ Boundary Loaded")
 
 st.sidebar.divider()
-target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Emeralds", "Diamonds"])
+target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Heavy Mineral Sands", "Diamonds"])
 
 # ========================================================
 # 4. INTERACTIVE MAPPING WITH CUSTOM TILES CONTROLLER
@@ -142,7 +146,7 @@ target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "E
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader("🗺️ Interactive Concession Map Layer")
+    st.subheader("🗺️ Portal de Cadastro Mineiro de Moçambique")
     
     if selected_basemap == "Google Satellite Imagery":
         m = folium.Map(
@@ -184,17 +188,17 @@ with col1:
         st.session_state["map_center"] = [lat, lng]
         st.session_state["active_polygon"] = create_mock_polygon(lat, lng, size=0.012)
         st.session_state["concession_metadata"] = {
-            "License ID": f"LAT:{lat:.2f}_LNG:{lng:.2f}",
-            "Concession Name": f"Spatial Discovery Zone ({lat:.3f}N)",
-            "Holder / Operator": "Discovered via Map Click Portal",
-            "Size (Hectares)": "1,850 Ha",
-            "Grant Date": "2024-07-24",
-            "Expiry Date": "2035-12-31",
-            "Status": "Unassigned Open Application Target"
+            "Código da Licença (Code)": f"MZ_LT:{lat:.2f}_LG:{lng:.2f}",
+            "Nome da Concessão": f"Zona de Descoberta Espacial ({lat:.3f}S)",
+            "Titular (Holder Company)": "Ministério dos Recursos Minerais e Energia",
+            "Área / Dimensão": "2,150 Ha",
+            "Data de Emissão": "2026-07-24",
+            "Data de Validade (Expiry)": "2040-12-31",
+            "Tipo de Direito / Estado": "Área Livre para Requerimento"
         }
         st.rerun()
 
-    st.write("### 📋 Landfolio Mining Database Registry")
+    st.write("### 📋 Registo do Cadastro de Minas (Landfolio)")
     st.table(st.session_state["concession_metadata"])
 
 # ========================================================
@@ -204,7 +208,7 @@ with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
     
     with st.spinner("Processing multispectral imagery stack..."):
-        m_data = fetch_and_calculate_spatz(st.session_state["map_center"], st.session_state["map_center"], selected_year)
+        m_data = fetch_and_calculate_spatz(st.session_state["map_center"][0], st.session_state["map_center"][1], selected_year)
     
     st.markdown("#### **WAY 1: Hydrothermal Alteration**")
     w1_c1, w1_c2 = st.columns(2)
@@ -217,17 +221,3 @@ with col2:
     st.markdown("#### **WAY 3: Lithological Silicification**")
     st.metric("Quartz Veining Emissivity", m_data["Way_3_Silica_Flooding_Cap"])
     
-    st.markdown("#### **WAY 4: Geobotanical Stress**")
-    st.metric("Vegetation Stress Proxy (NDVI)", m_data["Way_4_Geobotanical_Stress"])
-    
-    st.markdown("#### **WAY 5: GIS Predictive Synthesis**")
-    st.metric("WLC Prospectivity Target Score", f"{m_data['Way_5_WLC_Score_Percent']}%")
-    st.caption(f"🛰️ Source Pipeline ID: {m_data['Satellite_Used']}")
-    st.divider()
-    
-    if st.button("🚀 Generate 5-Way Geological Synthesis"):
-        with st.spinner("watsonx.ai is correlating all matrices..."):
-            client = get_watsonx_client()
-            meta = st.session_state["concession_metadata"]
-            
-            # Straight text formulation block entirely clean of nested multi-line tuple groupings
