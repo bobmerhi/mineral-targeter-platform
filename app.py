@@ -26,95 +26,136 @@ def get_watsonx_client():
     return client
 
 # ========================================================
-# 2. PLATFORM FRONTEND INTERFACE & LANDFOLIO API ROUTING
+# 2. SESSION STATE STATE-MACHINE FOR MAPPING GEOMETRIES
+# ========================================================
+# This keeps track of our map view and active polygon features across updates
+if "map_center" not in st.session_state:
+    st.session_state["map_center"] = [-23.5505, 46.6333]
+if "active_polygon" not in st.session_state:
+    st.session_state["active_polygon"] = None
+if "concession_text" not in st.session_state:
+    st.session_state["concession_text"] = "Default Coordinates Active"
+
+def create_mock_polygon(lat, lon, size=0.02):
+    """Generates a standard square GeoJSON polygon surrounding target coordinates."""
+    return {
+        "type": "Feature",
+        "properties": {"name": "Concession Area Boundary"},
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [lon - size, lat - size],
+                [lon + size, lat - size],
+                [lon + size, lat + size],
+                [lon - size, lat + size],
+                [lon - size, lat - size]
+            ]]
+        }
+    }
+
+# ========================================================
+# 3. UPGRADED TARGET SELECTION MENU (SIDEBAR)
 # ========================================================
 st.set_page_config(page_title="SatIntel AI Gold Platform", layout="wide")
 st.title("🛰️ SatIntel: Comprehensive 5-Way Gold Exploration Hub")
 
-# --- UPGRADED TARGET SELECTION MENU (SIDEBAR) ---
 st.sidebar.header("🎯 Target Selection Menu")
 selected_year = st.sidebar.slider("Select Analysis Year", min_value=1990, max_value=2026, value=2024, step=1)
 
-# Search Methodology Selection
 search_method = st.sidebar.radio(
     "Select Landfolio Lookup Method",
-    [
-        "(a) License # Search", 
-        "(b) Name Search", 
-        "(c) Map Selection", 
-        "(d) File Upload"
-    ]
+    ["(a) License # Search", "(b) Name Search", "(c) Map Selection", "(d) File Upload"]
 )
 
-# Initialize fallback coordinates
-target_lat = -23.5505
-target_lon = 46.6333
-active_concession_info = "Default Coordinates Active"
-
+# Reset active targets dynamically based on input changes
 if search_method == "(a) License # Search":
     license_num = st.sidebar.text_input("Enter License Number (Exact Match)", placeholder="e.g., L-4095-X")
     if license_num:
-        # Endpoint: GET /api/concessions?license={num}
-        active_concession_info = f"Landfolio Concession License: {license_num}"
-        st.sidebar.success(f"✓ Connected to API License: {license_num}")
+        # Mocking incoming data from GET /api/concessions?license={num}
+        st.session_state["map_center"] = [-23.5400, 46.6200] # Adjust Map Center
+        st.session_state["active_polygon"] = create_mock_polygon(-23.5400, 46.6200, size=0.015)
+        st.session_state["concession_text"] = f"Landfolio Concession License: {license_num}"
+        st.sidebar.success(f"✓ Found License: {license_num}")
 
 elif search_method == "(b) Name Search":
-    name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., AngloGold Ashanti")
+    name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., AngloGold")
     if name_query:
-        # Endpoint: GET /api/concessions?name={query}
-        active_concession_info = f"Fuzzy Match Results for: '{name_query}'"
-        st.sidebar.success(f"✓ Trigram match active for: {name_query}")
+        # Mocking results from GET /api/concessions?name={query}
+        st.session_state["map_center"] = [-23.5600, 46.6500]
+        st.session_state["active_polygon"] = create_mock_polygon(-23.5600, 46.6500, size=0.025)
+        st.session_state["concession_text"] = f"Fuzzy Trigram Match: '{name_query}'"
+        st.sidebar.success(f"✓ Connected to Match")
 
 elif search_method == "(c) Map Selection":
-    st.sidebar.info("👉 Click anywhere directly on the interactive map to execute a spatial ST_Contains query.")
-    active_concession_info = "Spatial Intersect Mode Active via Map Point"
+    st.sidebar.info("👉 Click anywhere on the map to trigger a spatial ST_Contains query.")
 
 elif search_method == "(d) File Upload":
-    uploaded_file = st.sidebar.file_uploader("Upload Boundary (SHP, KML, GeoJSON, CSV)", type=["geojson", "kml", "csv", "zip"])
+    uploaded_file = st.sidebar.file_uploader("Upload Boundary (GeoJSON, KML)", type=["geojson", "kml"])
     if uploaded_file is not None:
-        # Pipeline: Parse file -> Reproject -> ST_Intersects backend lookup
-        active_concession_info = f"Uploaded Boundary Layer: {uploaded_file.name}"
-        st.sidebar.success(f"✓ File '{uploaded_file.name}' reprojected to EPSG:4326")
+        # In production, parse actual file string into a dictionary layer
+        st.session_state["map_center"] = [-23.5300, 46.6100]
+        st.session_state["active_polygon"] = create_mock_polygon(-23.5300, 46.6100, size=0.03)
+        st.session_state["concession_text"] = f"Uploaded Boundary Layer: {uploaded_file.name}"
+        st.sidebar.success(f"✓ Layer Reprojected to EPSG:4326")
 
 st.sidebar.divider()
 target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Emeralds", "Diamonds"])
 
 # ========================================================
-# 3. INTERACTIVE MAPPING WITH CLICK INTERSECT LISTENER
+# 4. INTERACTIVE MAPPING WITH BOUNDARY RENDERERS
 # ========================================================
 col1, col2 = st.columns(2)
 
 with col1:
     st.subheader(f"🗺️ Interactive Concession Map ({selected_year})")
     
-    # Initialize Map
-    m = folium.Map(location=[target_lat, target_lon], zoom_start=11)
-    folium.Marker([target_lat, target_lon], popup="Target Area", icon=folium.Icon(color='gold', icon='star')).add_to(m)
+    # Generate Map centered around current session center state variable
+    m = folium.Map(location=st.session_state["map_center"], zoom_start=12)
     
-    # Render map and catch user interactions
-    map_data = st_folium(m, width=550, height=400)
+    # DYNAMIC RENDERER: If an active polygon data layer exists, draw it onto the map
+    if st.session_state["active_polygon"]:
+        folium.GeoJson(
+            st.session_state["active_polygon"],
+            name="Concession Boundary",
+            style_function=lambda x: {
+                "fillColor": "#FFD700",  # Gold color fill
+                "color": "#FF8C00",      # Dark orange border line
+                "weight": 3,
+                "fillOpacity": 0.4,
+            }
+        ).add_to(m)
     
-    # Capture map click coordinate context for Option (c)
+    # Catch user clicking interactions
+    map_data = st_folium(m, width=550, height=400, key=f"map_{st.session_state['map_center']}")
+    
+    # Handle option (c) Map Clicking spatial queries
     if search_method == "(c) Map Selection" and map_data and map_data.get("last_clicked"):
         click_point = map_data["last_clicked"]
-        target_lat = click_point["lat"]
-        target_lon = click_point["lng"]
-        # Endpoint: GET /api/concessions/intersects?lat=&lng=
-        active_concession_info = f"ST_Contains Intersect at Point: {target_lat:.4f}, {target_lon:.4f}"
-        st.toast(f"📍 Map Intersect Triggered: {target_lat:.4f}, {target_lon:.4f}", icon="🌍")
+        lat, lng = click_point["lat"], click_point["lng"]
+        
+        # Execute ST_Contains logic emulation -> generate polygon around click
+        st.session_state["map_center"] = [lat, lng]
+        st.session_state["active_polygon"] = create_mock_polygon(lat, lng, size=0.012)
+        st.session_state["concession_text"] = f"ST_Contains Intersect at Point: {lat:.4f}, {lng:.4f}"
+        st.rerun() # Forces visual map reload to overlay new shape immediately
 
-    st.info(f"📋 **Current Context Data:**\n{active_concession_info}")
+    st.info(f"📋 **Active Concession Pipeline Data Context:**\n{st.session_state['concession_text']}")
 
 # ========================================================
-# 4. REMOTE SENSING PROCESSING & AI INFERENCE
+# 5. REMOTE SENSING DATA ENGINE & AI RUNTIME
 # ========================================================
 with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
     
+    # Pass our active map center point straight to the imagery algorithms
     with st.spinner("Processing multispectral imagery stack..."):
-        m_data = fetch_and_calculate_spatz(target_lat, target_lon, selected_year)
+        m_data = fetch_and_calculate_spatz(
+            st.session_state["map_center"][0], 
+            st.session_state["map_center"][1], 
+            selected_year
+        )
     
-    # Display Analytics Metrics
+    # Render analytics layout
     st.markdown("#### **WAY 1: Hydrothermal Alteration**")
     w1_c1, w1_c2 = st.columns(2)
     w1_c1.metric("Iron Oxide (Gossans)", m_data["Way_1_Iron_Oxide_Gossan"])
@@ -131,7 +172,7 @@ with col2:
     
     st.markdown("#### **WAY 5: GIS Predictive Synthesis**")
     st.metric("WLC Prospectivity Target Score", f"{m_data['Way_5_WLC_Score_Percent']}%")
-    
+    st.caption(f"🛰️ Source Pipeline ID: {m_data['Satellite_Used']}")
     st.divider()
     
     if st.button("🚀 Generate 5-Way Geological Synthesis"):
@@ -140,22 +181,17 @@ with col2:
             
             prompt = f"""
             [Role: Senior Exploration Geologist]
+            Evaluate these Spatz remote sensing values for {target_commodity} mineralization at coordinates {st.session_state['map_center']} for the year {selected_year}:
+            Context Block: {st.session_state['concession_text']}
             
-            Context Environment:
-            - Concession Reference Context: {active_concession_info}
-            - Evaluation Location: Latitude {target_lat:.5f}, Longitude {target_lon:.5f}
-            - Exploration Target: {target_commodity}
-            - Pipeline Timeline Snapshot: Year {selected_year}
+            Metrics:
+            - Iron Oxide: {m_data['Way_1_Iron_Oxide_Gossan']}, Clay: {m_data['Way_1_Clay_Phyllic']}
+            - Structural Density: {m_data['Way_2_Fault_Density_Index']}
+            - Quartz/Silica: {m_data['Way_3_Silica_Flooding_Cap']}
+            - Vegetation Shift: {m_data['Way_4_Geobotanical_Stress']}
+            - Combined WLC Confidence: {m_data['Way_5_WLC_Score_Percent']}%
             
-            Remote Sensing Input Metrics:
-            1. Alteration Indices: Iron Oxide={m_data['Way_1_Iron_Oxide_Gossan']}, Clay={m_data['Way_1_Clay_Phyllic']}
-            2. Structural Lineaments: Fault Density={m_data['Way_2_Fault_Density_Index']}
-            3. Silicification Matrix: {m_data['Way_3_Silica_Flooding_Cap']}
-            4. Vegetation Stress Index: {m_data['Way_4_Geobotanical_Stress']}
-            5. Final Synthesis Weight Score: {m_data['Way_5_WLC_Score_Percent']}%
-            
-            Task:
-            Write a detailed geological prospectivity assessment. Address the concession details if provided. Conclude with a clear recommendation on whether these inputs suggest field drilling or further geochemical ground-truthing.
+            Provide a clear, brief technical recommendation for ground-truthing based on these values.
             """
             
             model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
