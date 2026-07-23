@@ -19,8 +19,10 @@ except KeyError:
 # Configured parameters matching your live Dallas server endpoint environment
 credentials = {
     "url": "https://ibm.com",
-    "apikey": IBM_API_KEY
+    "apikey": IBM_API_KEY,
+    "version": "5.0"  # <-- THIS EXPLICITLY SOLVES THE VERSION GATE ERROR
 }
+
 
 @st.cache_resource
 def get_watsonx_client():
