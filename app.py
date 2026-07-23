@@ -230,5 +230,5 @@ with col2:
             client = get_watsonx_client()
             meta = st.session_state["concession_metadata"]
             
-            prompt = f"""
-            [Role: Senior Exploration Geologist]
+            # Formulating the prompt via flat concatenation strings to prevent nested quote parsing failures
+            prompt = (
