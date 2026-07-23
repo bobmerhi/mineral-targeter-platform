@@ -1,7 +1,8 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-from ibm_watsonx_ai import APIClient
+# Import the explicit Credentials definition wrapper
+from ibm_watsonx_ai import APIClient, Credentials
 from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import fetch_and_calculate_spatz, get_real_mozambique_cadastre
 
@@ -15,15 +16,16 @@ except KeyError:
     st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
 
-credentials = {
-    "url": "https://ibm.com",
-    "apikey": IBM_API_KEY,
-    "token_type": "Bearer" 
-}
+# Force Cloud SaaS mode by utilizing the official object initialization constructor wrapper
+watsonx_creds = Credentials(
+    url="https://us-south.ml.cloud.ibm.com",
+    api_key=IBM_API_KEY
+)
 
 @st.cache_resource
 def get_watsonx_client():
-    client = APIClient(credentials)
+    # Pass the object class directly instead of a plain dictionary to bypass the Cloud Pak error completely
+    client = APIClient(credentials=watsonx_creds)
     client.set.default_project(PROJECT_ID)
     return client
 
@@ -170,5 +172,5 @@ with col2:
             
             complete_prompt = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
             
-            model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
+            model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=watsonx_creds, project_id=PROJECT_ID)
             st.markdown(model.generate_text(prompt=complete_prompt))
