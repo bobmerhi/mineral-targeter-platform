@@ -16,12 +16,12 @@ except KeyError:
     st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
 
-# Standardized parameters matching the public Cloud SaaS SDK requirements
+# Standard public Cloud SaaS parameter layout for Pay-As-You-Go accounts
 credentials = {
-    "url": "https://ibm.com",
-    "apikey": IBM_API_KEY,
-    "version": "2024-03-14"  # <-- THIS DATE FORMAT FORCES CLOUD MODE AND FIXES THE USERNAME ERROR
+    "url": "https://us-south.ml.cloud.ibm.com",
+    "apikey": IBM_API_KEY
 }
+
 
 
 
