@@ -5,12 +5,14 @@ from ibm_watsonx_ai import APIClient
 from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import fetch_and_calculate_spatz
 
+# ========================================================
 # 1. SECURE CONFIGURATION VIA STREAMLIT CLOUD SECRETS
+# ========================================================
 try:
     IBM_API_KEY = st.secrets["IBM_API_KEY"]
     PROJECT_ID = st.secrets["PROJECT_ID"]
 except KeyError:
-    st.error("🔒 Streamlit Secrets missing!")
+    st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
 
 credentials = {
@@ -68,7 +70,6 @@ st.title("🛰️ SatIntel: Comprehensive 5-Way Gold Exploration Hub")
 
 st.sidebar.header("🎯 Target Selection Menu")
 
-# BASEMAP TILE LAYER SWITCHER (The dropdown you requested)
 selected_basemap = st.sidebar.selectbox(
     "🗺️ Select Map Layer View",
     ["Google Satellite Imagery", "OpenStreetMap (Standard)", "Esri Topographic Map", "Stamen Terrain"]
@@ -81,7 +82,6 @@ search_method = st.sidebar.radio(
     ["(a) License # Search", "(b) Name Search", "(c) Map Selection", "(d) File Upload"]
 )
 
-# Process sidebar inputs and update database records
 if search_method == "(a) License # Search":
     license_num = st.sidebar.text_input("Enter License Number (Exact Match)", placeholder="e.g., L-4095-X")
     if license_num:
@@ -96,7 +96,7 @@ if search_method == "(a) License # Search":
             "Expiry Date": "2036-06-30",
             "Status": "Granted Exploration Phase"
         }
-        st.sidebar.success(f"✓ License Loaded")
+        st.sidebar.success("✓ License Loaded")
 
 elif search_method == "(b) Name Search":
     name_query = st.sidebar.text_input("Mine or Holder Name (Fuzzy Match)", placeholder="e.g., Newmont")
@@ -112,7 +112,7 @@ elif search_method == "(b) Name Search":
             "Expiry Date": "2030-08-22",
             "Status": "Production Lease Option"
         }
-        st.sidebar.success(f"✓ Operator Found")
+        st.sidebar.success("✓ Operator Found")
 
 elif search_method == "(c) Map Selection":
     st.sidebar.info("👉 Click anywhere on the map to query the underlying Landfolio database block.")
@@ -131,7 +131,7 @@ elif search_method == "(d) File Upload":
             "Expiry Date": "Pending Review",
             "Status": "Custom Local Polygon Layer"
         }
-        st.sidebar.success(f"✓ Boundary Loaded")
+        st.sidebar.success("✓ Boundary Loaded")
 
 st.sidebar.divider()
 target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "Emeralds", "Diamonds"])
@@ -142,9 +142,8 @@ target_commodity = st.sidebar.selectbox("Commodity Focus", ["Gold", "Copper", "E
 col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader(f"🗺️ Interactive Concession Map Layer")
+    st.subheader("🗺️ Interactive Concession Map Layer")
     
-    # Configure basemap configurations dynamically
     if selected_basemap == "Google Satellite Imagery":
         m = folium.Map(
             location=st.session_state["map_center"], 
@@ -162,9 +161,8 @@ with col1:
     elif selected_basemap == "Stamen Terrain":
         m = folium.Map(location=st.session_state["map_center"], zoom_start=12, tiles="stamenterrain")
     else:
-        m = folium.Map(location=st.session_state["map_center"], zoom_start=12) # Standard OpenStreetMap Default
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=12)
         
-    # Draw polygon layer overlay if active
     if st.session_state["active_polygon"]:
         folium.GeoJson(
             st.session_state["active_polygon"],
@@ -177,10 +175,8 @@ with col1:
             }
         ).add_to(m)
         
-    # Launch Map Component
     map_data = st_folium(m, width=550, height=380, key=f"map_{selected_basemap}_{st.session_state['map_center']}")
     
-    # Map click listener logic for option (c)
     if search_method == "(c) Map Selection" and map_data and map_data.get("last_clicked"):
         click_point = map_data["last_clicked"]
         lat, lng = click_point["lat"], click_point["lng"]
@@ -198,10 +194,7 @@ with col1:
         }
         st.rerun()
 
-    # --- THE METADATA REGISTRATION TABLE PANEL (The database read fields you requested) ---
     st.write("### 📋 Landfolio Mining Database Registry")
-    
-    # We display the python meta dictionary as a clean native UI table view
     st.table(st.session_state["concession_metadata"])
 
 # ========================================================
@@ -234,3 +227,8 @@ with col2:
     
     if st.button("🚀 Generate 5-Way Geological Synthesis"):
         with st.spinner("watsonx.ai is correlating all matrices..."):
+            client = get_watsonx_client()
+            meta = st.session_state["concession_metadata"]
+            
+            prompt = f"""
+            [Role: Senior Exploration Geologist]
