@@ -1,14 +1,14 @@
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-# Import the explicit Credentials definition wrapper
-from ibm_watsonx_ai import APIClient, Credentials
+from ibm_watsonx_ai import APIClient
 from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import fetch_and_calculate_spatz, get_real_mozambique_cadastre
 
 # ========================================================
-# 1. SECURE CONFIGURATION VIA STREAMLIT CLOUD SECRETS
+# 1. PLATFORM CONFIGURATION & SECURITY GATEWAY
 # ========================================================
+# Streamlit reads these configuration blocks from your secure cloud settings dashboard
 try:
     IBM_API_KEY = st.secrets["IBM_API_KEY"]
     PROJECT_ID = st.secrets["PROJECT_ID"]
@@ -16,21 +16,20 @@ except KeyError:
     st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
 
-# Force Cloud SaaS mode by utilizing the official object initialization constructor wrapper
-watsonx_creds = Credentials(
-    url="https://us-south.ml.cloud.ibm.com",
-    api_key=IBM_API_KEY
-)
+# Configured parameters matching your live Dallas server endpoint environment
+credentials = {
+    "url": "https://ibm.com",
+    "apikey": IBM_API_KEY
+}
 
 @st.cache_resource
 def get_watsonx_client():
-    # Pass the object class directly instead of a plain dictionary to bypass the Cloud Pak error completely
-    client = APIClient(credentials=watsonx_creds)
+    client = APIClient(credentials=credentials)
     client.set.default_project(PROJECT_ID)
     return client
 
 # ========================================================
-# 2. SESSION STATE ARBITRATION
+# 2. APPLICATION RUNTIME SESSION STATE
 # ========================================================
 if "map_center" not in st.session_state:
     st.session_state["map_center"] = [-15.8234, 33.6120] 
@@ -49,7 +48,7 @@ if "concession_metadata" not in st.session_state:
     }
 
 # ========================================================
-# 3. INTERFACE BUILDER & LIVE DATABASE SWITCHER
+# 3. INTERFACE BUILDER & STREAMLIT LAYOUT
 # ========================================================
 st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
 st.title("🛰️ SatIntel: Mozambique Mining Cadastre Real-Time Platform")
@@ -76,7 +75,7 @@ if search_method == "(a) License # Search":
                 st.session_state["concession_metadata"] = db_result["metadata"]
                 st.sidebar.success(f"✓ Concessão {license_num} carregada!")
             else:
-                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada.")
+                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada nos servidores.")
 
 elif search_method == "(c) Map Selection":
     st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para capturar as coordenadas reais do terreno.")
@@ -134,7 +133,7 @@ with col1:
 with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
     
-    with st.spinner("Processing multi-spectral analytics over target concession..."):
+    with st.spinner("Processing multi-spectral analytics..."):
         m_data = fetch_and_calculate_spatz(st.session_state["map_center"], st.session_state["map_center"], selected_year)
     
     st.markdown("#### **WAY 1: Hydrothermal Alteration**")
@@ -157,7 +156,7 @@ with col2:
     st.divider()
     
     if st.button("🚀 Generate 5-Way Geological Synthesis"):
-        with st.spinner("watsonx.ai is correlating all matrices..."):
+        with st.spinner("O watsonx.ai está correlacionando as matrizes geológicas..."):
             client = get_watsonx_client()
             meta = st.session_state["concession_metadata"]
             
@@ -172,5 +171,5 @@ with col2:
             
             complete_prompt = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
             
-            model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=watsonx_creds, project_id=PROJECT_ID)
+            model = ModelInference(model_id="ibm/granite-13b-instruct-v2", credentials=credentials, project_id=PROJECT_ID)
             st.markdown(model.generate_text(prompt=complete_prompt))
