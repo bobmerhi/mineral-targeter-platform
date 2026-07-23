@@ -16,12 +16,13 @@ except KeyError:
     st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
 
-# Configured parameters matching your live Dallas server endpoint environment
+# Standardized parameters matching the public Cloud SaaS SDK requirements
 credentials = {
     "url": "https://ibm.com",
     "apikey": IBM_API_KEY,
-    "version": "5.0"  # <-- THIS EXPLICITLY SOLVES THE VERSION GATE ERROR
+    "version": "2024-03-14"  # <-- THIS DATE FORMAT FORCES CLOUD MODE AND FIXES THE USERNAME ERROR
 }
+
 
 
 @st.cache_resource
