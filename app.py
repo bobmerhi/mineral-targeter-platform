@@ -124,7 +124,7 @@ elif search_method == "(d) File Upload":
         st.session_state["active_polygon"] = create_mock_polygon(-23.5300, 46.6100, size=0.03)
         st.session_state["concession_metadata"] = {
             "License ID": "UPLOADED-TEMP-01",
-            "Concession Name": uploaded_file.name.split('.')[0].upper(),
+            "Concession Name": str(uploaded_file.name).upper(),
             "Holder / Operator": "User Imported Layer",
             "Size (Hectares)": "3,110 Ha",
             "Grant Date": "N/A",
@@ -230,5 +230,4 @@ with col2:
             client = get_watsonx_client()
             meta = st.session_state["concession_metadata"]
             
-            # Formulating the prompt via flat concatenation strings to prevent nested quote parsing failures
-            prompt = (
+            # Straight text formulation block entirely clean of nested multi-line tuple groupings
