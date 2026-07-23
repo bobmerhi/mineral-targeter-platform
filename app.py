@@ -10,8 +10,8 @@ from georemote import fetch_and_calculate_spatz, get_real_mozambique_cadastre
 # ========================================================
 # Streamlit reads these configuration blocks from your secure cloud settings dashboard
 try:
-    IBM_API_KEY = st.secrets["IBM_API_KEY"]
-    PROJECT_ID = st.secrets["PROJECT_ID"]
+    IBM_API_KEY = st.secrets["WATSONX_APIKEY"]
+    PROJECT_ID = st.secrets["WATSONX_PROJECT_ID"]
 except KeyError:
     st.error("🔒 Streamlit Secrets missing! Please verify your setup.")
     st.stop()
