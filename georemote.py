@@ -6,6 +6,15 @@ to ensure the module always imports successfully on Streamlit Cloud.
 import numpy as np
 import re
 import math
+import warnings
+
+# Suppress SSL warnings from INAMI/Landfolio servers (self-signed certs)
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:
+    pass
+warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 # ========================================================
 # CONFIGURATION
