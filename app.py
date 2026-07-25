@@ -25,7 +25,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 
 class TechnicalReportPDF(FPDF):
@@ -281,21 +280,23 @@ with col2:
         placeholder_data = fetch_and_calculate_spatz(st.session_state["map_center"], None, selected_year)
         st.session_state["m_data"] = placeholder_data
 
-    # If fetch was requested, do the actual fetch
+    # If fetch was requested, do the actual fetch with LIVE progress
     if st.session_state.get("fetch_requested") and st.session_state.get("satellite_data") is None:
         st.session_state["fetch_requested"] = False
-        with st.spinner("Fetching Landsat imagery & computing spectral indices, PCA & lineaments..."):
+        with st.status("Fetching satellite data & computing spectral indices...", expanded=True) as status:
             try:
                 lat, lon = st.session_state["map_center"]
                 active_poly = st.session_state.get("active_polygon")
                 poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
-                # Run fetch with 120-second timeout to prevent hanging
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(fetch_satellite_imagery, lat, lon, selected_year, bbox=poly_bbox)
-                    try:
-                        sat_data = future.result(timeout=120)
-                    except FuturesTimeoutError:
-                        raise RuntimeError("Satellite fetch timed out after 120 seconds. Planetary Computer may be slow. Try again later.")
+
+                def progress_cb(msg):
+                    st.write(f"  {msg}")
+
+                sat_data = fetch_satellite_imagery(
+                    lat, lon, selected_year, bbox=poly_bbox, progress_cb=progress_cb
+                )
+
+                st.write("  Generating exploration target zones...")
                 st.session_state["satellite_data"] = sat_data
                 st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":   sat_data["Way_1_Iron_Oxide_Gossan"],
@@ -307,8 +308,11 @@ with col2:
                     "Satellite_Used":             sat_data["Satellite_Used"],
                 }
                 st.session_state["exploration_targets"] = generate_exploration_targets(sat_data)
+                st.write("  Done! Loading results...")
+                status.update(label="Satellite analysis complete!", state="complete", expanded=False)
             except Exception as e:
-                st.warning(f"Satellite fetch failed: {str(e)[:150]}. Using predictive values.")
+                st.write(f"  Error: {str(e)[:200]}")
+                status.update(label="Satellite fetch failed - using predictive values", state="error")
                 st.session_state["m_data"] = fetch_and_calculate_spatz(st.session_state["map_center"], None, selected_year)
                 st.session_state["satellite_data"] = None
                 st.session_state["exploration_targets"] = None
