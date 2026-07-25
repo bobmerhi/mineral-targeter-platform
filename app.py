@@ -568,18 +568,43 @@ if sat_data is not None:
             "Radius (m)": t["radius_m"], "Lat": f"{t['lat']:.4f}", "Lon": f"{t['lon']:.4f}",
         } for t in targets], use_container_width=True, hide_index=True)
 
-        st.markdown("### Target Descriptions")
+        st.markdown("### Descrições Detalhadas dos Alvos")
         for t in targets:
             badge = {"HIGH": "🔴", "MEDIUM": "🟠", "LOW": "🟢"}.get(t["priority"], "⚪")
-            with st.expander(f"{badge} {t['id']} — Score: {t['score']} ({t['priority']})"):
-                c1, c2 = st.columns(2)
-                c1.markdown(f"**Structural:** {t['structural_control']}")
-                c1.markdown(f"**Lithology:** {t['lithology']}")
-                c1.markdown(f"**Radius:** ~{t['radius_m']} m")
-                c2.markdown(f"**Lat/Lon:** {t['lat']:.6f}, {t['lon']:.6f}")
-                c2.markdown(f"**IO={t['io_score']} Clay={t['clay_score']} Struct={t['struct_score']} Geo={t['geomorph_score']} Line={t['line_score']}**")
-                st.markdown(f"🇬🇧 {t['description_en']}")
-                st.markdown(f"🇲🇿 {t['description_pt']}")
+            priority_color = {"HIGH": "#dc3545", "MEDIUM": "#fd7e14", "LOW": "#198754"}.get(t["priority"], "#6c757d")
+            with st.expander(f"{badge} {t['id']} — {t['lithology']} ({t['priority']}) | Score: {t['score']}", expanded=False):
+                # Metadata row
+                c1, c2, c3 = st.columns(3)
+                c1.markdown(f"**🧭 Controlo Estrutural**  \n{t['structural_control']}")
+                c2.markdown(f"**🪨 Litologia**  \n{t['lithology']}")
+                c3.markdown(f"**📍 Coordenadas**  \nLat: {t['lat']:.4f} | Lon: {t['lon']:.4f}  \n**Raio:** ~{t['radius_m']} m")
+
+                # Score breakdown
+                st.markdown(f"""
+<div style="background:#f8f9fa;border-radius:6px;padding:8px 12px;margin:8px 0;font-size:0.85em;color:#333">
+<b>Scores:</b> &nbsp;
+IO = {t['io_score']} &nbsp;|&nbsp;
+Clay = {t['clay_score']} &nbsp;|&nbsp;
+Struct = {t['struct_score']} &nbsp;|&nbsp;
+Geo = {t['geomorph_score']} &nbsp;|&nbsp;
+Line = {t['line_score']} &nbsp;|&nbsp;
+<b>Composto = {t['score']}</b>
+</div>
+""", unsafe_allow_html=True)
+
+                # Bilingual descriptions — full width, word wrapped
+                st.markdown(f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px">
+  <div style="background:#e8f4fd;border-left:4px solid #0d6efd;border-radius:4px;padding:10px 14px">
+    <div style="font-size:0.8em;font-weight:600;color:#0d6efd;margin-bottom:4px">🇬🇧 ENGLISH</div>
+    <div style="font-size:0.9em;line-height:1.5;word-wrap:break-word;white-space:normal">{t['description_en']}</div>
+  </div>
+  <div style="background:#fff3cd;border-left:4px solid #ffc107;border-radius:4px;padding:10px 14px">
+    <div style="font-size:0.8em;font-weight:600;color:#856404;margin-bottom:4px">🇲🇿 PORTUGUÊS</div>
+    <div style="font-size:0.9em;line-height:1.5;word-wrap:break-word;white-space:normal">{t['description_pt']}</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
     # ── EXPORTS ──────────────────────────────────────────────────────────
     st.markdown("---")
