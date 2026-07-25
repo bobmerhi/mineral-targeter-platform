@@ -197,9 +197,10 @@ with col2:
                 project_id=PROJECT_ID,
                 params={
                     "max_new_tokens": 1500,
-                    "temperature": 0.7,
-                    "decoding_method": "greedy"
+                    "temperature": 0.7
                 }
             )
-            result = model.generate_text(prompt=complete_prompt)
+            # Use chat API (non-deprecated) instead of text/generation
+            messages = [{"role": "user", "content": complete_prompt}]
+            result = model.generate_chat_text(messages=messages)
             st.markdown(result)
