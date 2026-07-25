@@ -4,6 +4,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import streamlit as st
+from datetime import datetime
 st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
 
 import folium
@@ -34,21 +35,54 @@ import json
 
 
 # ========================================================
-# PDF CLASS
+# PDF CLASS — Unicode-safe with professional cover page
 # ========================================================
+def _clean_pdf_text(text):
+    """Replace Unicode chars that Helvetica can't render with ASCII equivalents."""
+    if not text:
+        return ""
+    replacements = {
+        "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"',
+        "\u201d": '"', "\u2026": "...", "\u00e7": "c", "\u00e9": "e", "\u00ea": "e",
+        "\u00e1": "a", "\u00ed": "i", "\u00f3": "o", "\u00f5": "o", "\u00fa": "u",
+        "\u00e0": "a", "\u00e8": "e", "\u00ec": "i", "\u00f2": "o", "\u00f9": "u",
+        "\u00c7": "C", "\u00c9": "E", "\u00ca": "E", "\u00c1": "A", "\u00cd": "I",
+        "\u00d3": "O", "\u00d5": "O", "\u00da": "U", "\u00c0": "A", "\u00c8": "E",
+        "\u00cc": "I", "\u00d2": "O", "\u00d9": "U", "\u00e3": "a", "\u00f1": "n",
+        "\u00c3": "A", "\u00d1": "N", "\u00ba": "o", "\u00aa": "a", "\u00b2": "2",
+        "\u00b3": "3", "\u00b0": " deg", "\u00b5": "u", "\u00d7": "x", "\u00f7": "/",
+        "\u2192": "->", "\u2190": "<-", "\u2191": "^", "\u2193": "v",
+        "\u2265": ">=", "\u2264": "<=", "\u2260": "!=", "\u221e": "inf",
+        "\u00b1": "+/-", "\u00b7": ".", "\u25cf": "*", "\u2022": "-",
+        "\u2013": "-", "\u2014": "-", "\u00a0": " ",
+    }
+    result = text
+    for unicode_char, ascii_repl in replacements.items():
+        result = result.replace(chr(int(unicode_char.replace("\\u", ""), 16)), ascii_repl)
+    # Final fallback: encode to latin-1 with replacement for anything still unsupported
+    return result.encode("ascii", "replace").decode("ascii")
+
+
 class TechnicalReportPDF(FPDF):
     def header(self):
-        self.set_font('Helvetica', 'B', 12)
-        self.set_text_color(40, 40, 40)
-        self.cell(0, 10, 'SATINTEL - GEOLOGICAL & MINING INSIGHTS', 0, 1, 'L')
-        self.set_draw_color(200, 200, 200)
-        self.line(10, 20, 200, 20)
-        self.ln(10)
+        if self.page_no() == 1:
+            return  # Cover page has its own header
+        self.set_font('Helvetica', 'B', 9)
+        self.set_text_color(100, 100, 100)
+        self.cell(0, 8, _clean_pdf_text(self.report_title or 'SatIntel Report'), 0, 1, 'L')
+        self.set_draw_color(180, 180, 180)
+        self.line(10, 18, 200, 18)
+        self.ln(4)
+
     def footer(self):
         self.set_y(-15)
         self.set_font('Helvetica', 'I', 8)
         self.set_text_color(128, 128, 128)
-        self.cell(0, 10, f'Pagina {self.page_no()}/{{nb}} - Gerado via SatIntel AI', 0, 0, 'C')
+        page = f'Pagina {self.page_no()}/{{nb}}'
+        if hasattr(self, 'author_name') and self.author_name:
+            page += f'  |  Autor: {_clean_pdf_text(self.author_name)}'
+        page += '  |  SatIntel AI'
+        self.cell(0, 10, page, 0, 0, 'C')
 
 
 # ========================================================
@@ -666,6 +700,52 @@ m_data = st.session_state["m_data"] or {}
 sat_data = st.session_state.get("satellite_data")
 targets  = st.session_state.get("exploration_targets")
 
+# ── Professional report metadata form ──────────────────────
+with st.expander("📋 Report Author & Professional Information", expanded=True):
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        report_author = st.text_input("Prepared by (Nome do Responsavel)*", value="",
+            placeholder="e.g., Eng. Badr Merhi")
+        report_title = st.selectbox("Professional Title (Cargo)", [
+            "Geologo Senior de Exploracao",
+            "Engenheiro de Minas",
+            "Diretor Tecnico",
+            "Consultor Geologico",
+            "Geofisico",
+            "Especialista em Sensoriamento Remoto",
+            "Outro",
+        ])
+        if report_title == "Outro":
+            report_title = st.text_input("Specify title", placeholder="Enter your title")
+    with rc2:
+        report_company = st.text_input("Company / Organization (Empresa)*", value="",
+            placeholder="e.g., SatIntel Exploration Ltd.")
+        report_license_no = st.text_input("Professional License No. (No. de Inscricao)",
+            placeholder="e.g., CEA-1234/MZ")
+        report_report_no = st.text_input("Report Reference No. (No. do Relatorio)",
+            placeholder="e.g., SAT-2024-001")
+
+    rc3, rc4 = st.columns(2)
+    with rc3:
+        report_date = st.date_input("Report Date (Data do Relatorio)",
+            value=datetime.now())
+    with rc4:
+        report_classification = st.selectbox("Document Classification", [
+            "Confidencial - Uso Interno",
+            "Restrito - Cliente",
+            "Tecnico - Informativo",
+            "Preliminar - Nao Revisado",
+        ])
+
+    # Store in session for PDF generation
+    st.session_state["report_author"] = report_author
+    st.session_state["report_title"] = report_title
+    st.session_state["report_company"] = report_company
+    st.session_state["report_license_no"] = report_license_no
+    st.session_state["report_ref_no"] = report_report_no
+    st.session_state["report_date"] = report_date
+    st.session_state["report_classification"] = report_classification
+
 if st.button("📋 Generate Comprehensive Geological Synthesis Report",
              use_container_width=True, type="primary"):
     with st.spinner("watsonx.ai a processar analise geologica completa..."):
@@ -754,36 +834,281 @@ Use terminologia geologica tecnica. Seja especifico e quantitativo."""
         st.markdown(report_text)
 
         st.markdown("---")
-        st.markdown("### 📄 Export Report as PDF")
+        st.markdown("### 📄 Export Professional Report")
+
+        # Build professional PDF
         try:
             pdf = TechnicalReportPDF()
             pdf.alias_nb_pages()
+            pdf.author_name = st.session_state.get("report_author", "")
+            conces_name = meta.get('Nome da Concessao', meta.get('Nome da Concessão', 'Concessao'))
+            lic_code = meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))
+            pdf.report_title = f"Parecer Tecnico - {conces_name}"
+
+            # ── COVER PAGE ──────────────────────────────────────
             pdf.add_page()
             pdf.set_auto_page_break(auto=True, margin=25)
-            pdf.set_font('Helvetica', 'B', 16)
-            pdf.set_text_color(0, 77, 64)
-            conces_name = meta.get('Nome da Concessao', meta.get('Nome da Concessão', 'Concessao'))
-            pdf.multi_cell(0, 10, f'PARECER TECNICO — {conces_name}')
-            pdf.ln(5)
-            pdf.set_font('Helvetica', 'B', 10); pdf.set_text_color(0, 0, 0)
-            lic_code = meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))
-            pdf.cell(0, 6, f'Licenca: {lic_code}', 0, 1)
-            pdf.cell(0, 6, f'Titular: {meta.get("Titular (Holder Company)", "N/A")}', 0, 1)
-            pdf.cell(0, 6, f'Data: {selected_year} | Satelite: {m_data.get("Satellite_Used", "N/A")}', 0, 1)
-            pdf.ln(5)
+
+            # Top banner
+            pdf.set_fill_color(0, 77, 64)
+            pdf.rect(0, 0, 210, 40, 'F')
+            pdf.set_font('Helvetica', 'B', 22)
+            pdf.set_text_color(255, 255, 255)
+            pdf.set_xy(0, 12)
+            pdf.cell(0, 12, _clean_pdf_text("SATINTEL"), 0, 1, 'C')
             pdf.set_font('Helvetica', '', 10)
+            pdf.set_xy(0, 27)
+            pdf.cell(0, 6, _clean_pdf_text("Geological & Mining Insights Platform"), 0, 1, 'C')
+
+            # Classification badge
+            classification = st.session_state.get("report_classification", "Confidencial")
+            pdf.set_font('Helvetica', 'B', 9)
+            pdf.set_text_color(180, 0, 0)
+            pdf.set_xy(0, 44)
+            pdf.cell(0, 6, _clean_pdf_text(classification), 0, 1, 'C')
+
+            # Main title block
+            pdf.ln(15)
+            pdf.set_font('Helvetica', 'B', 18)
+            pdf.set_text_color(0, 77, 64)
+            pdf.multi_cell(190, 10, _clean_pdf_text(f"PARECER TECNICO DE EXPLORACAO"))
+            pdf.ln(2)
+            pdf.set_font('Helvetica', 'B', 14)
+            pdf.set_text_color(40, 40, 40)
+            pdf.multi_cell(190, 8, _clean_pdf_text(f"Concessao: {conces_name}"))
+            pdf.ln(3)
+            pdf.set_font('Helvetica', '', 11)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 6, _clean_pdf_text(f"Licenca: {lic_code}"), 0, 1)
+
+            # Divider
+            pdf.ln(5)
+            pdf.set_draw_color(0, 77, 64)
+            pdf.set_line_width(0.5)
+            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+            pdf.ln(10)
+
+            # Author / professional info box
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.set_text_color(0, 77, 64)
+            pdf.cell(0, 7, _clean_pdf_text("INFORMACOES DO RESPONSABEL TECNICO"), 0, 1)
+            pdf.ln(2)
+            pdf.set_font('Helvetica', '', 10)
+            pdf.set_text_color(40, 40, 40)
+
+            author = st.session_state.get("report_author", "N/A")
+            title = st.session_state.get("report_title", "N/A")
+            company = st.session_state.get("report_company", "N/A")
+            lic_no = st.session_state.get("report_license_no", "N/A")
+            ref_no = st.session_state.get("report_ref_no", "N/A")
+            r_date = st.session_state.get("report_date")
+            date_str = r_date.strftime("%d/%m/%Y") if r_date else "N/A"
+
+            info_lines = [
+                f"Prepared by:    {author}",
+                f"Cargo:          {title}",
+                f"Empresa:        {company}",
+                f"Licenca Prof.:  {lic_no}",
+                f"No. Relatorio:  {ref_no}",
+                f"Data:           {date_str}",
+            ]
+            for line in info_lines:
+                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
+
+            # Concession summary box
+            pdf.ln(8)
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.set_text_color(0, 77, 64)
+            pdf.cell(0, 7, _clean_pdf_text("DADOS DA CONCESSAO"), 0, 1)
+            pdf.ln(2)
+            pdf.set_font('Helvetica', '', 10)
+            pdf.set_text_color(40, 40, 40)
+
+            concession_lines = [
+                f"Nome:         {conces_name}",
+                f"Titular:      {meta.get('Titular (Holder Company)', 'N/A')}",
+                f"Area:         {meta.get('Area / Dimensao', meta.get('Area / Dimensao', 'N/A'))}",
+                f"Substancias:  {meta.get('Substancias', meta.get('Substancias', 'N/A'))}",
+                f"Status:       {meta.get('Estado (Status)', 'N/A')}",
+                f"Validade:     {meta.get('Data de Validade (Expiry)', 'N/A')}",
+            ]
+            for line in concession_lines:
+                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
+
+            # Technical summary box
+            pdf.ln(8)
+            pdf.set_font('Helvetica', 'B', 11)
+            pdf.set_text_color(0, 77, 64)
+            pdf.cell(0, 7, _clean_pdf_text("DADOS TECNICOS - SENSORIAMENTO REMOTO"), 0, 1)
+            pdf.ln(2)
+            pdf.set_font('Helvetica', '', 10)
+            pdf.set_text_color(40, 40, 40)
+
+            tech_lines = [
+                f"Satelite:        {m_data.get('Satellite_Used', 'N/A')}",
+                f"Cobertura Nuvens: {m_data.get('cloud_cover', 'N/A')}%",
+                f"Cena:            {m_data.get('scene_date', 'N/A')}",
+                f"WLC Score:       {m_data.get('Way_5_WLC_Score_Percent', 'N/A')}%",
+                f"Alvos Gerados:    {len(targets) if targets else 0}",
+            ]
+            for line in tech_lines:
+                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
+
+            # Bottom banner
+            pdf.ln(15)
+            pdf.set_font('Helvetica', 'I', 8)
+            pdf.set_text_color(128, 128, 128)
+            pdf.cell(0, 5, _clean_pdf_text(
+                "Este documento foi gerado pelo SatIntel AI usando dados Landsat (USGS/NASA) e IBM watsonx.ai."), 0, 1, 'C')
+            pdf.cell(0, 5, _clean_pdf_text(
+                "O conteudo tecnico deve ser validado por trabalho de campo antes da tomada de decisao."), 0, 1, 'C')
+
+            # ── REPORT CONTENT PAGE ──────────────────────────────
+            pdf.add_page()
+            pdf.set_auto_page_break(auto=True, margin=25)
+
+            # Clean and format the Watsonx report text
             clean_text = report_text.replace('**', '').replace('*', '').replace('#', '')
-            for line in clean_text.split('\n'):
-                try:
-                    pdf.multi_cell(0, 5, line.encode('latin-1', 'replace').decode('latin-1'))
-                except Exception:
-                    pass
+            clean_text = clean_text.replace('\r\n', '\n').replace('\r', '\n')
+
+            lines = clean_text.split('\n')
+            in_table = False
+
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    pdf.ln(3)
+                    continue
+
+                # Detect section headers (numbered)
+                is_header = False
+                for prefix in ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."]:
+                    if stripped.startswith(prefix):
+                        is_header = True
+                        break
+
+                if is_header and len(stripped) < 100:
+                    pdf.ln(3)
+                    pdf.set_font('Helvetica', 'B', 12)
+                    pdf.set_text_color(0, 77, 64)
+                    pdf.multi_cell(190, 6, _clean_pdf_text(stripped))
+                    pdf.set_text_color(40, 40, 40)
+                    pdf.ln(1)
+                elif stripped.startswith("- ") or stripped.startswith("* "):
+                    pdf.set_font('Helvetica', '', 10)
+                    pdf.set_text_color(50, 50, 50)
+                    pdf.cell(5, 5, "", 0, 0)
+                    pdf.multi_cell(190, 5, _clean_pdf_text("  - " + stripped[2:]))
+                elif "|" in stripped and stripped.count("|") >= 2:
+                    # Table-like line
+                    pdf.set_font('Courier', '', 9)
+                    pdf.set_text_color(50, 50, 50)
+                    pdf.multi_cell(190, 5, _clean_pdf_text(stripped))
+                else:
+                    pdf.set_font('Helvetica', '', 10)
+                    pdf.set_text_color(40, 40, 40)
+                    pdf.multi_cell(190, 5, _clean_pdf_text(stripped))
+
+            # ── TARGETS SUMMARY PAGE (if targets exist) ──────────
+            if targets:
+                pdf.add_page()
+                pdf.set_auto_page_break(auto=True, margin=25)
+                pdf.set_font('Helvetica', 'B', 14)
+                pdf.set_text_color(0, 77, 64)
+                pdf.multi_cell(190, 8, _clean_pdf_text("RESUMO DE ALVOS DE EXPLORACAO"))
+                pdf.ln(3)
+
+                # Table header
+                pdf.set_font('Helvetica', 'B', 9)
+                pdf.set_fill_color(0, 77, 64)
+                pdf.set_text_color(255, 255, 255)
+                pdf.cell(15, 7, "ID", 1, 0, 'C', True)
+                pdf.cell(20, 7, "Score", 1, 0, 'C', True)
+                pdf.cell(25, 7, "Priority", 1, 0, 'C', True)
+                pdf.cell(55, 7, "Structural Control", 1, 0, 'C', True)
+                pdf.cell(75, 7, "Lithology", 1, 1, 'C', True)
+
+                # Table rows
+                pdf.set_text_color(40, 40, 40)
+                for t in targets:
+                    pdf.set_font('Helvetica', '', 8)
+                    if t["priority"] == "HIGH":
+                        pdf.set_fill_color(255, 230, 230)
+                    elif t["priority"] == "MEDIUM":
+                        pdf.set_fill_color(255, 240, 220)
+                    else:
+                        pdf.set_fill_color(230, 255, 230)
+                    pdf.cell(15, 6, _clean_pdf_text(t["id"]), 1, 0, 'C', True)
+                    pdf.cell(20, 6, f'{t["score"]}%', 1, 0, 'C', True)
+                    pdf.cell(25, 6, _clean_pdf_text(t["priority"]), 1, 0, 'C', True)
+                    pdf.cell(55, 6, _clean_pdf_text(t["structural_control"]), 1, 0, 'L', True)
+                    pdf.cell(75, 6, _clean_pdf_text(t["lithology"]), 1, 1, 'L', True)
+
+                pdf.ln(5)
+                pdf.set_font('Helvetica', '', 9)
+                pdf.set_text_color(60, 60, 60)
+                for t in targets:
+                    pdf.set_font('Helvetica', 'B', 9)
+                    pdf.set_text_color(0, 77, 64)
+                    pdf.multi_cell(190, 5, _clean_pdf_text(f"  {t['id']} - {t['lithology']} ({t['priority']})"))
+                    pdf.set_font('Helvetica', '', 8)
+                    pdf.set_text_color(80, 80, 80)
+                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f} | Radius: ~{t['radius_m']}m"))
+                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    EN: {t['description_en']}"))
+                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    PT: {t['description_pt']}"))
+                    pdf.ln(2)
+
+            # ── SIGNATURE BLOCK ──────────────────────────────────
+            pdf.ln(15)
+            pdf.set_draw_color(120, 120, 120)
+            pdf.set_line_width(0.3)
+            sig_y = pdf.get_y()
+            pdf.line(60, sig_y, 140, sig_y)
+            pdf.ln(2)
+            pdf.set_font('Helvetica', 'B', 10)
+            pdf.set_text_color(40, 40, 40)
+            pdf.cell(0, 5, _clean_pdf_text(author), 0, 1, 'C')
+            pdf.set_font('Helvetica', '', 9)
+            pdf.set_text_color(80, 80, 80)
+            pdf.cell(0, 5, _clean_pdf_text(title), 0, 1, 'C')
+            pdf.cell(0, 5, _clean_pdf_text(company), 0, 1, 'C')
+            if lic_no and lic_no != "N/A":
+                pdf.cell(0, 5, _clean_pdf_text(f"Licenca Prof.: {lic_no}"), 0, 1, 'C')
+
             pdf_bytes = bytes(pdf.output())
-            st.download_button("📥 Download PDF Report", data=pdf_bytes,
+            st.download_button("📥 Download Professional PDF Report", data=pdf_bytes,
                 file_name=f"SatIntel_Report_{lic_code}_{selected_year}.pdf",
                 mime="application/pdf", use_container_width=True)
+
         except Exception as e:
             st.warning(f"PDF export error: {e}")
-            st.download_button("📥 Download Report (TXT)", data=report_text.encode("utf-8"),
-                file_name=f"SatIntel_Report_{selected_year}.txt",
+            # Fallback: clean TXT with header
+            header = f"""
+SATINTEL - PARECER TECNICO DE EXPLORACAO
+==========================================
+Concessao: {conces_name}
+Licenca: {lic_code}
+Data: {date_str}
+
+PREPARED BY:
+  Author:  {author}
+  Title:   {title}
+  Company: {company}
+  Lic.No:  {lic_no}
+  Ref.No:  {ref_no}
+==========================================
+
+"""
+            full_text = header + report_text
+            if targets:
+                full_text += "\n\n=== ALVOS DE EXPLORACAO ===\n"
+                for t in targets:
+                    full_text += f"\n{t['id']} | Score: {t['score']}% | {t['priority']}\n"
+                    full_text += f"  Lithology: {t['lithology']}\n"
+                    full_text += f"  Control: {t['structural_control']}\n"
+                    full_text += f"  Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f} | Radius: ~{t['radius_m']}m\n"
+                    full_text += f"  EN: {t['description_en']}\n"
+                    full_text += f"  PT: {t['description_pt']}\n"
+            st.download_button("📥 Download Report (TXT)", data=full_text.encode("utf-8"),
+                file_name=f"SatIntel_Report_{lic_code}_{selected_year}.txt",
                 mime="text/plain", use_container_width=True)
