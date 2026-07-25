@@ -25,6 +25,7 @@ from export_utils import (
     create_png_bundle,
     create_targets_kmz,
 )
+from pdf_report import generate_professional_report
 from fpdf import FPDF
 import matplotlib
 matplotlib.use("Agg")
@@ -836,9 +837,9 @@ Use terminologia geologica tecnica. Seja especifico e quantitativo."""
         st.markdown("---")
         st.markdown("### 📄 Export Professional Report")
 
-        # Pre-define variables for both try and except blocks
-        conces_name = meta.get('Nome da Concessao', meta.get('Nome da Concessão', 'Concessao'))
-        lic_code = meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))
+        # Pre-define variables
+        conces_name = meta.get('Nome da Concessão', meta.get('Nome da Concessao', 'Concessão'))
+        lic_code = meta.get('Código da Licença (Code)', meta.get('Codigo da Licenca (Code)', 'N/A'))
         author = st.session_state.get("report_author", "N/A")
         title = st.session_state.get("report_title", "N/A")
         company = st.session_state.get("report_company", "N/A")
@@ -847,248 +848,44 @@ Use terminologia geologica tecnica. Seja especifico e quantitativo."""
         r_date = st.session_state.get("report_date")
         date_str = r_date.strftime("%d/%m/%Y") if r_date else "N/A"
 
-        # Build professional PDF
+        author_info = {
+            "author": author,
+            "title": title,
+            "company": company,
+            "license_no": lic_no,
+            "ref_no": ref_no,
+            "date": date_str,
+            "classification": st.session_state.get("report_classification", "Confidencial — Uso Interno"),
+        }
+
+        active_poly = st.session_state.get("active_polygon")
+        fbbox = st.session_state.get("satellite_data", {}).get("fetch_bbox") if st.session_state.get("satellite_data") else None
+
         try:
-            pdf = TechnicalReportPDF()
-            pdf.alias_nb_pages()
-            pdf.author_name = author
-            pdf.report_title = f"Parecer Tecnico - {conces_name}"
-
-            # ── COVER PAGE ──────────────────────────────────────
-            pdf.add_page()
-            pdf.set_auto_page_break(auto=True, margin=25)
-
-            # Top banner
-            pdf.set_fill_color(0, 77, 64)
-            pdf.rect(0, 0, 210, 40, 'F')
-            pdf.set_font('Helvetica', 'B', 22)
-            pdf.set_text_color(255, 255, 255)
-            pdf.set_xy(0, 12)
-            pdf.cell(0, 12, _clean_pdf_text("SATINTEL"), 0, 1, 'C')
-            pdf.set_font('Helvetica', '', 10)
-            pdf.set_xy(0, 27)
-            pdf.cell(0, 6, _clean_pdf_text("Geological & Mining Insights Platform"), 0, 1, 'C')
-
-            # Classification badge
-            classification = st.session_state.get("report_classification", "Confidencial")
-            pdf.set_font('Helvetica', 'B', 9)
-            pdf.set_text_color(180, 0, 0)
-            pdf.set_xy(0, 44)
-            pdf.cell(0, 6, _clean_pdf_text(classification), 0, 1, 'C')
-
-            # Main title block
-            pdf.ln(15)
-            pdf.set_font('Helvetica', 'B', 18)
-            pdf.set_text_color(0, 77, 64)
-            pdf.multi_cell(190, 10, _clean_pdf_text(f"PARECER TECNICO DE EXPLORACAO"))
-            pdf.ln(2)
-            pdf.set_font('Helvetica', 'B', 14)
-            pdf.set_text_color(40, 40, 40)
-            pdf.multi_cell(190, 8, _clean_pdf_text(f"Concessao: {conces_name}"))
-            pdf.ln(3)
-            pdf.set_font('Helvetica', '', 11)
-            pdf.set_text_color(80, 80, 80)
-            pdf.cell(0, 6, _clean_pdf_text(f"Licenca: {lic_code}"), 0, 1)
-
-            # Divider
-            pdf.ln(5)
-            pdf.set_draw_color(0, 77, 64)
-            pdf.set_line_width(0.5)
-            pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-            pdf.ln(10)
-
-            # Author / professional info box
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.set_text_color(0, 77, 64)
-            pdf.cell(0, 7, _clean_pdf_text("INFORMACOES DO RESPONSABEL TECNICO"), 0, 1)
-            pdf.ln(2)
-            pdf.set_font('Helvetica', '', 10)
-            pdf.set_text_color(40, 40, 40)
-
-            info_lines = [
-                f"Prepared by:    {author}",
-                f"Cargo:          {title}",
-                f"Empresa:        {company}",
-                f"Licenca Prof.:  {lic_no}",
-                f"No. Relatorio:  {ref_no}",
-                f"Data:           {date_str}",
-            ]
-            for line in info_lines:
-                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
-
-            # Concession summary box
-            pdf.ln(8)
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.set_text_color(0, 77, 64)
-            pdf.cell(0, 7, _clean_pdf_text("DADOS DA CONCESSAO"), 0, 1)
-            pdf.ln(2)
-            pdf.set_font('Helvetica', '', 10)
-            pdf.set_text_color(40, 40, 40)
-
-            concession_lines = [
-                f"Nome:         {conces_name}",
-                f"Titular:      {meta.get('Titular (Holder Company)', 'N/A')}",
-                f"Area:         {meta.get('Area / Dimensao', meta.get('Area / Dimensao', 'N/A'))}",
-                f"Substancias:  {meta.get('Substancias', meta.get('Substancias', 'N/A'))}",
-                f"Status:       {meta.get('Estado (Status)', 'N/A')}",
-                f"Validade:     {meta.get('Data de Validade (Expiry)', 'N/A')}",
-            ]
-            for line in concession_lines:
-                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
-
-            # Technical summary box
-            pdf.ln(8)
-            pdf.set_font('Helvetica', 'B', 11)
-            pdf.set_text_color(0, 77, 64)
-            pdf.cell(0, 7, _clean_pdf_text("DADOS TECNICOS - SENSORIAMENTO REMOTO"), 0, 1)
-            pdf.ln(2)
-            pdf.set_font('Helvetica', '', 10)
-            pdf.set_text_color(40, 40, 40)
-
-            tech_lines = [
-                f"Satelite:        {m_data.get('Satellite_Used', 'N/A')}",
-                f"Cobertura Nuvens: {m_data.get('cloud_cover', 'N/A')}%",
-                f"Cena:            {m_data.get('scene_date', 'N/A')}",
-                f"WLC Score:       {m_data.get('Way_5_WLC_Score_Percent', 'N/A')}%",
-                f"Alvos Gerados:    {len(targets) if targets else 0}",
-            ]
-            for line in tech_lines:
-                pdf.cell(0, 6, _clean_pdf_text(line), 0, 1)
-
-            # Bottom banner
-            pdf.ln(15)
-            pdf.set_font('Helvetica', 'I', 8)
-            pdf.set_text_color(128, 128, 128)
-            pdf.cell(0, 5, _clean_pdf_text(
-                "Este documento foi gerado pelo SatIntel AI usando dados Landsat (USGS/NASA) e IBM watsonx.ai."), 0, 1, 'C')
-            pdf.cell(0, 5, _clean_pdf_text(
-                "O conteudo tecnico deve ser validado por trabalho de campo antes da tomada de decisao."), 0, 1, 'C')
-
-            # ── REPORT CONTENT PAGE ──────────────────────────────
-            pdf.add_page()
-            pdf.set_auto_page_break(auto=True, margin=25)
-
-            # Clean and format the Watsonx report text
-            clean_text = report_text.replace('**', '').replace('*', '').replace('#', '')
-            clean_text = clean_text.replace('\r\n', '\n').replace('\r', '\n')
-
-            lines = clean_text.split('\n')
-            in_table = False
-
-            for line in lines:
-                stripped = line.strip()
-                if not stripped:
-                    pdf.ln(3)
-                    continue
-
-                # Detect section headers (numbered)
-                is_header = False
-                for prefix in ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8."]:
-                    if stripped.startswith(prefix):
-                        is_header = True
-                        break
-
-                if is_header and len(stripped) < 100:
-                    pdf.ln(3)
-                    pdf.set_font('Helvetica', 'B', 12)
-                    pdf.set_text_color(0, 77, 64)
-                    pdf.multi_cell(190, 6, _clean_pdf_text(stripped))
-                    pdf.set_text_color(40, 40, 40)
-                    pdf.ln(1)
-                elif stripped.startswith("- ") or stripped.startswith("* "):
-                    pdf.set_font('Helvetica', '', 10)
-                    pdf.set_text_color(50, 50, 50)
-                    pdf.cell(5, 5, "", 0, 0)
-                    pdf.multi_cell(190, 5, _clean_pdf_text("  - " + stripped[2:]))
-                elif "|" in stripped and stripped.count("|") >= 2:
-                    # Table-like line
-                    pdf.set_font('Courier', '', 9)
-                    pdf.set_text_color(50, 50, 50)
-                    pdf.multi_cell(190, 5, _clean_pdf_text(stripped))
-                else:
-                    pdf.set_font('Helvetica', '', 10)
-                    pdf.set_text_color(40, 40, 40)
-                    pdf.multi_cell(190, 5, _clean_pdf_text(stripped))
-
-            # ── TARGETS SUMMARY PAGE (if targets exist) ──────────
-            if targets:
-                pdf.add_page()
-                pdf.set_auto_page_break(auto=True, margin=25)
-                pdf.set_font('Helvetica', 'B', 14)
-                pdf.set_text_color(0, 77, 64)
-                pdf.multi_cell(190, 8, _clean_pdf_text("RESUMO DE ALVOS DE EXPLORACAO"))
-                pdf.ln(3)
-
-                # Table header
-                pdf.set_font('Helvetica', 'B', 9)
-                pdf.set_fill_color(0, 77, 64)
-                pdf.set_text_color(255, 255, 255)
-                pdf.cell(15, 7, "ID", 1, 0, 'C', True)
-                pdf.cell(20, 7, "Score", 1, 0, 'C', True)
-                pdf.cell(25, 7, "Priority", 1, 0, 'C', True)
-                pdf.cell(55, 7, "Structural Control", 1, 0, 'C', True)
-                pdf.cell(75, 7, "Lithology", 1, 1, 'C', True)
-
-                # Table rows
-                pdf.set_text_color(40, 40, 40)
-                for t in targets:
-                    pdf.set_font('Helvetica', '', 8)
-                    if t["priority"] == "HIGH":
-                        pdf.set_fill_color(255, 230, 230)
-                    elif t["priority"] == "MEDIUM":
-                        pdf.set_fill_color(255, 240, 220)
-                    else:
-                        pdf.set_fill_color(230, 255, 230)
-                    pdf.cell(15, 6, _clean_pdf_text(t["id"]), 1, 0, 'C', True)
-                    pdf.cell(20, 6, f'{t["score"]}%', 1, 0, 'C', True)
-                    pdf.cell(25, 6, _clean_pdf_text(t["priority"]), 1, 0, 'C', True)
-                    pdf.cell(55, 6, _clean_pdf_text(t["structural_control"]), 1, 0, 'L', True)
-                    pdf.cell(75, 6, _clean_pdf_text(t["lithology"]), 1, 1, 'L', True)
-
-                pdf.ln(5)
-                pdf.set_font('Helvetica', '', 9)
-                pdf.set_text_color(60, 60, 60)
-                for t in targets:
-                    pdf.set_font('Helvetica', 'B', 9)
-                    pdf.set_text_color(0, 77, 64)
-                    pdf.multi_cell(190, 5, _clean_pdf_text(f"  {t['id']} - {t['lithology']} ({t['priority']})"))
-                    pdf.set_font('Helvetica', '', 8)
-                    pdf.set_text_color(80, 80, 80)
-                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f} | Radius: ~{t['radius_m']}m"))
-                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    EN: {t['description_en']}"))
-                    pdf.multi_cell(190, 4, _clean_pdf_text(f"    PT: {t['description_pt']}"))
-                    pdf.ln(2)
-
-            # ── SIGNATURE BLOCK ──────────────────────────────────
-            pdf.ln(15)
-            pdf.set_draw_color(120, 120, 120)
-            pdf.set_line_width(0.3)
-            sig_y = pdf.get_y()
-            pdf.line(60, sig_y, 140, sig_y)
-            pdf.ln(2)
-            pdf.set_font('Helvetica', 'B', 10)
-            pdf.set_text_color(40, 40, 40)
-            pdf.cell(0, 5, _clean_pdf_text(author), 0, 1, 'C')
-            pdf.set_font('Helvetica', '', 9)
-            pdf.set_text_color(80, 80, 80)
-            pdf.cell(0, 5, _clean_pdf_text(title), 0, 1, 'C')
-            pdf.cell(0, 5, _clean_pdf_text(company), 0, 1, 'C')
-            if lic_no and lic_no != "N/A":
-                pdf.cell(0, 5, _clean_pdf_text(f"Licenca Prof.: {lic_no}"), 0, 1, 'C')
-
-            pdf_bytes = bytes(pdf.output())
+            pdf_bytes = generate_professional_report(
+                report_text=report_text,
+                sat_data=sat_data,
+                m_data=m_data,
+                meta=meta,
+                targets=targets,
+                polygon=active_poly,
+                fetch_bbox=fbbox,
+                author_info=author_info,
+                selected_year=selected_year,
+                target_commodity=target_commodity,
+                map_center=st.session_state["map_center"],
+            )
             st.download_button("📥 Download Professional PDF Report", data=pdf_bytes,
                 file_name=f"SatIntel_Report_{lic_code}_{selected_year}.pdf",
                 mime="application/pdf", use_container_width=True)
-
         except Exception as e:
             st.warning(f"PDF export error: {e}")
-            # Fallback: clean TXT with header
+            # Fallback: TXT with header
             header = f"""
-SATINTEL - PARECER TECNICO DE EXPLORACAO
+SATINTEL — PARECER TÉCNICO DE EXPLORAÇÃO
 ==========================================
-Concessao: {conces_name}
-Licenca: {lic_code}
+Concessão: {conces_name}
+Licença: {lic_code}
 Data: {date_str}
 
 PREPARED BY:
@@ -1102,14 +899,11 @@ PREPARED BY:
 """
             full_text = header + report_text
             if targets:
-                full_text += "\n\n=== ALVOS DE EXPLORACAO ===\n"
+                full_text += "\n\n=== ALVOS DE EXPLORAÇÃO ===\n"
                 for t in targets:
                     full_text += f"\n{t['id']} | Score: {t['score']}% | {t['priority']}\n"
                     full_text += f"  Lithology: {t['lithology']}\n"
-                    full_text += f"  Control: {t['structural_control']}\n"
-                    full_text += f"  Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f} | Radius: ~{t['radius_m']}m\n"
-                    full_text += f"  EN: {t['description_en']}\n"
-                    full_text += f"  PT: {t['description_pt']}\n"
+                    full_text += f"  Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f}\n"
             st.download_button("📥 Download Report (TXT)", data=full_text.encode("utf-8"),
                 file_name=f"SatIntel_Report_{lic_code}_{selected_year}.txt",
                 mime="text/plain", use_container_width=True)
