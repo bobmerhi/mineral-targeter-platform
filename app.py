@@ -26,7 +26,6 @@ from export_utils import (
     create_targets_kmz,
 )
 from pdf_report import generate_professional_report
-from fpdf import FPDF
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -36,54 +35,8 @@ import json
 
 
 # ========================================================
-# PDF CLASS — Unicode-safe with professional cover page
+# PDF generation handled by pdf_report.py module (DejaVuSans UTF-8)
 # ========================================================
-def _clean_pdf_text(text):
-    """Replace Unicode chars that Helvetica can't render with ASCII equivalents."""
-    if not text:
-        return ""
-    replacements = {
-        "\u2014": "-", "\u2013": "-", "\u2018": "'", "\u2019": "'", "\u201c": '"',
-        "\u201d": '"', "\u2026": "...", "\u00e7": "c", "\u00e9": "e", "\u00ea": "e",
-        "\u00e1": "a", "\u00ed": "i", "\u00f3": "o", "\u00f5": "o", "\u00fa": "u",
-        "\u00e0": "a", "\u00e8": "e", "\u00ec": "i", "\u00f2": "o", "\u00f9": "u",
-        "\u00c7": "C", "\u00c9": "E", "\u00ca": "E", "\u00c1": "A", "\u00cd": "I",
-        "\u00d3": "O", "\u00d5": "O", "\u00da": "U", "\u00c0": "A", "\u00c8": "E",
-        "\u00cc": "I", "\u00d2": "O", "\u00d9": "U", "\u00e3": "a", "\u00f1": "n",
-        "\u00c3": "A", "\u00d1": "N", "\u00ba": "o", "\u00aa": "a", "\u00b2": "2",
-        "\u00b3": "3", "\u00b0": " deg", "\u00b5": "u", "\u00d7": "x", "\u00f7": "/",
-        "\u2192": "->", "\u2190": "<-", "\u2191": "^", "\u2193": "v",
-        "\u2265": ">=", "\u2264": "<=", "\u2260": "!=", "\u221e": "inf",
-        "\u00b1": "+/-", "\u00b7": ".", "\u25cf": "*", "\u2022": "-",
-        "\u2013": "-", "\u2014": "-", "\u00a0": " ",
-    }
-    result = text
-    for unicode_char, ascii_repl in replacements.items():
-        result = result.replace(unicode_char, ascii_repl)
-    # Final fallback: encode to ascii with replacement for anything still unsupported
-    return result.encode("ascii", "replace").decode("ascii")
-
-
-class TechnicalReportPDF(FPDF):
-    def header(self):
-        if self.page_no() == 1:
-            return  # Cover page has its own header
-        self.set_font('Helvetica', 'B', 9)
-        self.set_text_color(100, 100, 100)
-        self.cell(0, 8, _clean_pdf_text(self.report_title or 'SatIntel Report'), 0, 1, 'L')
-        self.set_draw_color(180, 180, 180)
-        self.line(10, 18, 200, 18)
-        self.ln(4)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Helvetica', 'I', 8)
-        self.set_text_color(128, 128, 128)
-        page = f'Pagina {self.page_no()}/{{nb}}'
-        if hasattr(self, 'author_name') and self.author_name:
-            page += f'  |  Autor: {_clean_pdf_text(self.author_name)}'
-        page += '  |  SatIntel AI'
-        self.cell(0, 10, page, 0, 0, 'C')
 
 
 # ========================================================
