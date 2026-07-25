@@ -56,15 +56,9 @@ def get_watsonx_client():
 
 
 # ========================================================
-# HELPER: draw polygon boundary on a matplotlib axis
+# HELPER: draw polygon on matplotlib axes (pixel coordinates)
 # ========================================================
 def draw_polygon_on_ax(ax, polygon_geojson, fetch_bbox, img_shape):
-    """
-    Draw the concession polygon on a matplotlib image axis.
-    Converts geographic coordinates to pixel coordinates using fetch_bbox.
-    fetch_bbox = [lon_min, lat_min, lon_max, lat_max]
-    img_shape  = (height, width) of the numpy image array
-    """
     if not polygon_geojson or fetch_bbox is None:
         return
     try:
@@ -72,37 +66,23 @@ def draw_polygon_on_ax(ax, polygon_geojson, fetch_bbox, img_shape):
         h, w = img_shape[:2]
 
         def geo_to_px(lon, lat):
-            # Map lon→x (left to right), lat→y (top to bottom, lat decreases downward in image)
             x = (lon - lon_min) / (lon_max - lon_min) * w
             y = (lat_max - lat) / (lat_max - lat_min) * h
             return x, y
 
         rings = polygon_geojson["geometry"]["coordinates"]
         for ring in rings:
-            px_coords = [geo_to_px(p[0], p[1]) for p in ring]
-            xs = [c[0] for c in px_coords]
-            ys = [c[1] for c in px_coords]
-
-            # Filled semi-transparent polygon
-            patch = MplPolygon(
-                list(zip(xs, ys)),
-                closed=True,
-                facecolor="cyan",
-                alpha=0.15,
-                edgecolor="yellow",
-                linewidth=2.5,
-                zorder=5,
-                transform=ax.transData,
-            )
+            px = [geo_to_px(p[0], p[1]) for p in ring]
+            xs = [c[0] for c in px]
+            ys = [c[1] for c in px]
+            patch = MplPolygon(list(zip(xs, ys)), closed=True,
+                              facecolor="cyan", alpha=0.15,
+                              edgecolor="yellow", linewidth=2.5, zorder=5)
             ax.add_patch(patch)
-            # Bold boundary line
             ax.plot(xs + [xs[0]], ys + [ys[0]], color="#FFD700", linewidth=2.5, zorder=6)
-
-        # Keep axes in pixel space (no axis labels)
         ax.set_xlim(0, w)
-        ax.set_ylim(h, 0)   # invert y so image top = lat_max
+        ax.set_ylim(h, 0)
         ax.axis("off")
-
     except Exception:
         ax.axis("off")
 
@@ -137,7 +117,6 @@ st.title("🛰️ SatIntel: Mozambique Mining Cadastre Real-Time Platform")
 st.caption("Live Production Database Synchronization with Landfolio MIREME REST API Servers")
 
 st.sidebar.header("🎯 Portal de Seleção de Alvos")
-
 selected_basemap = st.sidebar.selectbox(
     "🗺️ Select Map Layer View",
     ["Esri World Imagery (Satellite)", "Google Satellite Imagery", "OpenStreetMap (Standard)", "Esri Topographic Map"]
@@ -146,9 +125,9 @@ selected_year  = st.sidebar.slider("Select Analysis Year", 1990, 2026, 2024)
 search_method  = st.sidebar.radio("Select Landfolio Lookup Method", ["(a) License # Search", "(c) Map Selection"])
 
 if search_method == "(a) License # Search":
-    license_num = st.sidebar.text_input("Enter License Number (Real Database Match)", placeholder="e.g., 11521")
+    license_num = st.sidebar.text_input("Enter License Number", placeholder="e.g., 11521")
     if license_num:
-        with st.sidebar.spinner("Buscando dados no Cadastro Nacional (INAMI)..."):
+        with st.sidebar.spinner("Buscando no Cadastro (INAMI)..."):
             db_result = get_real_mozambique_cadastre(license_num)
             if db_result["found"]:
                 st.session_state["map_center"]         = [db_result["lat"], db_result["lon"]]
@@ -156,7 +135,7 @@ if search_method == "(a) License # Search":
                 st.session_state["concession_metadata"] = db_result["metadata"]
                 st.session_state["satellite_data"]      = None
                 st.session_state["m_data"]              = None
-                st.sidebar.success(f"✓ Concessão {license_num} carregada! Geometry from INAMI.")
+                st.sidebar.success(f"✓ Concessão {license_num} carregada!")
             else:
                 st.sidebar.error(f"❌ Licença '{license_num}' não encontrada.")
 else:
@@ -174,82 +153,60 @@ with col1:
     st.subheader("🗺️ Live Geographic Registry View")
 
     if selected_basemap == "Esri World Imagery (Satellite)":
-        m = folium.Map(
-            location=st.session_state["map_center"], zoom_start=10,
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri World Imagery"
-        )
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=10,
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr="Esri")
     elif selected_basemap == "Google Satellite Imagery":
-        m = folium.Map(
-            location=st.session_state["map_center"], zoom_start=10,
-            tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-            attr="Google Satellite"
-        )
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=10,
+            tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", attr="Google")
     elif selected_basemap == "Esri Topographic Map":
-        m = folium.Map(
-            location=st.session_state["map_center"], zoom_start=10,
-            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
-            attr="Esri Topographic"
-        )
+        m = folium.Map(location=st.session_state["map_center"], zoom_start=10,
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}", attr="Esri Topo")
     else:
         m = folium.Map(location=st.session_state["map_center"], zoom_start=10)
 
     if st.session_state["active_polygon"]:
-        folium.GeoJson(
-            st.session_state["active_polygon"],
-            name="Concession Boundary",
+        folium.GeoJson(st.session_state["active_polygon"], name="Concession Boundary",
             style_function=lambda x: {"fillColor": "#00E5FF", "color": "#FFD700", "weight": 4, "fillOpacity": 0.3},
-            tooltip=folium.GeoJsonTooltip(
-                fields=["name"], aliases=["Concession:"],
-                style="background-color:#004D40;color:white;font-weight:bold;padding:5px;border-radius:3px;"
-            )
+            tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Concession:"],
+                style="background-color:#004D40;color:white;font-weight:bold;padding:5px;border-radius:3px;")
         ).add_to(m)
-        folium.Marker(
-            location=st.session_state["map_center"],
+        folium.Marker(location=st.session_state["map_center"],
             tooltip=st.session_state["concession_metadata"].get("Nome da Concessão", "Center"),
-            icon=folium.Icon(color="red", icon="info-sign")
-        ).add_to(m)
+            icon=folium.Icon(color="red", icon="info-sign")).add_to(m)
 
     map_data = st_folium(m, width=550, height=380, key=f"map_{selected_basemap}_{st.session_state['map_center']}")
 
     if search_method == "(c) Map Selection" and map_data and map_data.get("last_clicked"):
         cp = map_data["last_clicked"]
         lat, lng = cp["lat"], cp["lng"]
-        st.session_state["map_center"]         = [lat, lng]
-        st.session_state["active_polygon"]      = None
+        st.session_state["map_center"] = [lat, lng]
+        st.session_state["active_polygon"] = None
         st.session_state["concession_metadata"] = {
-            "Código da Licença (Code)": "Coordenadas Manuais",
-            "Nome da Concessão": f"Ponto ({lat:.4f}, {lng:.4f})",
-            "Titular (Holder Company)": "Campo Livre",
-            "Área / Dimensão": "N/A",
-            "Data de Emissão": "N/A",
-            "Data de Validade (Expiry)": "N/A",
-            "Tipo de Direito / Estado": "Área Livre",
-            "Substâncias": "Seleção Manual"
+            "Código da Licença (Code)": "Manual", "Nome da Concessão": f"({lat:.4f}, {lng:.4f})",
+            "Titular (Holder Company)": "Campo Livre", "Área / Dimensão": "N/A",
+            "Data de Emissão": "N/A", "Data de Validade (Expiry)": "N/A",
+            "Tipo de Direito / Estado": "Área Livre", "Substâncias": "Seleção Manual"
         }
         st.session_state["satellite_data"] = None
-        st.session_state["m_data"]         = None
+        st.session_state["m_data"] = None
         st.rerun()
 
-    st.write("### 📋 Registo Oficial em Tempo Real (Trimble Landfolio / INAMI)")
+    st.write("### 📋 Registo Oficial (Trimble Landfolio / INAMI)")
     st.table(st.session_state["concession_metadata"])
 
 # ========================================================
-# 5-WAY REMOTE SENSING METRICS
+# 5-WAY METRICS
 # ========================================================
 with col2:
     st.subheader("📊 5 Core Remote Sensing Target Frameworks")
 
     if st.session_state["m_data"] is None:
-        with st.spinner("🛰️ Fetching Landsat satellite imagery..."):
+        with st.spinner("🛰️ Fetching Landsat imagery & computing spectral indices, PCA & lineaments..."):
             try:
-                lat, lon   = st.session_state["map_center"]
+                lat, lon = st.session_state["map_center"]
                 active_poly = st.session_state.get("active_polygon")
-
-                # Use polygon bbox so the full concession is covered
-                poly_bbox  = polygon_to_bbox(active_poly) if active_poly else None
-                sat_data   = fetch_satellite_imagery(lat, lon, selected_year, bbox=poly_bbox)
-
+                poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
+                sat_data = fetch_satellite_imagery(lat, lon, selected_year, bbox=poly_bbox)
                 st.session_state["satellite_data"] = sat_data
                 st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":   sat_data["Way_1_Iron_Oxide_Gossan"],
@@ -262,9 +219,7 @@ with col2:
                 }
             except Exception as e:
                 st.warning(f"⚠️ Satellite fetch failed: {str(e)[:120]}. Using predictive values.")
-                st.session_state["m_data"] = fetch_and_calculate_spatz(
-                    st.session_state["map_center"], None, selected_year
-                )
+                st.session_state["m_data"] = fetch_and_calculate_spatz(st.session_state["map_center"], None, selected_year)
                 st.session_state["satellite_data"] = None
 
     m_data = st.session_state["m_data"]
@@ -285,35 +240,26 @@ with col2:
 
     st.markdown("#### **WAY 5: GIS Predictive Synthesis**")
     st.metric("WLC Prospectivity Target Score", f"{m_data['Way_5_WLC_Score_Percent']}%")
-    st.caption(f"🛰️ Source Pipeline ID: {m_data['Satellite_Used']}")
+    st.caption(f"🛰️ {m_data['Satellite_Used']}")
     st.divider()
 
 # ========================================================
-# SATELLITE IMAGES WITH POLYGON OVERLAY (pixel-accurate)
+# SATELLITE IMAGERY + SPECTRAL INDEX MAPS
 # ========================================================
 sat_data = st.session_state.get("satellite_data")
 
 if sat_data is not None:
+    active_poly = st.session_state.get("active_polygon")
+    fetch_bbox  = sat_data.get("fetch_bbox")
+
+    # --- Standard 6 images ---
     st.markdown("---")
     st.markdown("## 🛰️ Satellite Imagery & Spectral Index Maps")
-    st.caption(
-        f"Scene Date: {sat_data['scene_date']} | "
-        f"Cloud Cover: {sat_data['cloud_cover']}% | "
-        f"Source: {sat_data['Satellite_Used']}"
-    )
-
-    active_poly = st.session_state.get("active_polygon")
-    fetch_bbox  = sat_data.get("fetch_bbox")   # [lon_min, lat_min, lon_max, lat_max]
-
+    st.caption(f"Scene: {sat_data['scene_date']} | Cloud: {sat_data['cloud_cover']}% | {sat_data['Satellite_Used']}")
     if active_poly:
-        lon_min, lat_min, lon_max, lat_max = fetch_bbox
-        st.success(
-            f"📍 Concession polygon overlay active — "
-            f"bbox: [{lon_min:.3f}°, {lat_min:.3f}°, {lon_max:.3f}°, {lat_max:.3f}°]"
-        )
+        st.success("📍 Concession polygon overlay active on all images below.")
 
     def make_fig(img_array, cmap=None, vmin=None, vmax=None, title="", label=""):
-        """Render one image with polygon overlay. Returns (fig, ax)."""
         fig, ax = plt.subplots(figsize=(7, 6))
         kw = {}
         if vmin is not None: kw["vmin"] = vmin
@@ -331,59 +277,131 @@ if sat_data is not None:
             ax.axis("off")
         return fig
 
-    # Row 1 – RGB & False Color
-    img_col1, img_col2 = st.columns(2)
-    with img_col1:
-        st.markdown("### 🌍 True Color Composite (RGB)")
-        fig = make_fig(sat_data["rgb"], title="Natural Color — Landsat")
-        st.pyplot(fig, use_container_width=True); plt.close()
-
-    with img_col2:
+    # Row 1
+    ic1, ic2 = st.columns(2)
+    with ic1:
+        st.markdown("### 🌍 True Color (RGB)")
+        st.pyplot(make_fig(sat_data["rgb"], title="Natural Color — Landsat"), use_container_width=True); plt.close()
+    with ic2:
         st.markdown("### 🔴 False Color (SWIR-NIR-Red)")
-        st.caption("Red/magenta = hydrothermal alteration zones")
-        fig = make_fig(sat_data["false_color"], title="Mineral Enhancement Composite")
-        st.pyplot(fig, use_container_width=True); plt.close()
+        st.caption("Red/magenta = alteration zones")
+        st.pyplot(make_fig(sat_data["false_color"], title="Mineral Enhancement Composite"), use_container_width=True); plt.close()
 
-    # Row 2 – Spectral indices
+    # Row 2
     st.markdown("---")
-    st.markdown("### 📐 Spectral Index Maps (Computed from Landsat Bands)")
+    st.markdown("### 📐 Spectral Index Maps")
+    ix1, ix2 = st.columns(2)
+    with ix1:
+        st.markdown("#### 🔶 Iron Oxide (Band Ratio)")
+        st.pyplot(make_fig(sat_data["iron_oxide_map"], cmap="RdYlBu_r", title="Iron Oxide Ratio (B4/B2)", label="Fe-Oxide"), use_container_width=True); plt.close()
+    with ix2:
+        st.markdown("#### 🟡 Clay/Hydroxyl (Band Ratio)")
+        st.pyplot(make_fig(sat_data["clay_map"], cmap="YlOrBr", title="Clay Ratio (B6/B7)", label="Clay"), use_container_width=True); plt.close()
 
-    idx1, idx2 = st.columns(2)
-    with idx1:
-        st.markdown("#### 🔶 Iron Oxide (Gossans) Index")
-        st.caption("Red/Blue ratio — ferric iron oxide zones")
-        fig = make_fig(sat_data["iron_oxide_map"], cmap="RdYlBu_r",
-                       title="Iron Oxide Ratio (Band 4 / Band 2)", label="Fe-Oxide Ratio")
-        st.pyplot(fig, use_container_width=True); plt.close()
-
-    with idx2:
-        st.markdown("#### 🟡 Clay/Hydroxyl Index")
-        st.caption("SWIR1/SWIR2 — hydrothermal clay alteration")
-        fig = make_fig(sat_data["clay_map"], cmap="YlOrBr",
-                       title="Clay Minerals Ratio (Band 6 / Band 7)", label="Clay Ratio")
-        st.pyplot(fig, use_container_width=True); plt.close()
-
-    idx3, idx4 = st.columns(2)
-    with idx3:
+    ix3, ix4 = st.columns(2)
+    with ix3:
         st.markdown("#### 🌿 NDVI — Vegetation Stress")
-        st.caption("Negative = bare rock; positive = healthy vegetation")
-        fig = make_fig(sat_data["ndvi_map"], cmap="RdYlGn", vmin=-0.3, vmax=0.8,
-                       title="NDVI (Band 5 - Band 4) / (Band 5 + Band 4)", label="NDVI")
-        st.pyplot(fig, use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["ndvi_map"], cmap="RdYlGn", vmin=-0.3, vmax=0.8, title="NDVI", label="NDVI"), use_container_width=True); plt.close()
+    with ix4:
+        st.markdown("#### ⬜ Silica Proxy")
+        st.pyplot(make_fig(sat_data["silica_map"], cmap="bone", title="Silica Proxy (B7/B6)", label="Silica"), use_container_width=True); plt.close()
 
-    with idx4:
-        st.markdown("#### ⬜ Silica Proxy Index")
-        st.caption("SWIR2/SWIR1 — silicified alteration zones")
-        fig = make_fig(sat_data["silica_map"], cmap="bone",
-                       title="Silica Proxy (Band 7 / Band 6)", label="Silica Ratio")
-        st.pyplot(fig, use_container_width=True); plt.close()
+    # ========================================================
+    # CROSTA PCA ALTERATION ANALYSIS
+    # ========================================================
+    st.markdown("---")
+    st.markdown("## 🔬 Crosta PCA — Hydrothermal Alteration Analysis")
+    st.caption("Feature-Oriented Principal Component Analysis (Crosta Technique) — targeted PCA on Landsat band subsets to isolate alteration mineral signatures.")
+
+    # Show eigenvector loadings
+    iron_load = sat_data.get("crosta_iron_loadings", {})
+    clay_load = sat_data.get("crosta_clay_loadings", {})
+
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        st.markdown("#### Iron Oxide PCA Eigenvector Loadings")
+        st.markdown(f"Selected **PC{sat_data.get('crosta_iron_pc', '?')+1}** (strongest Red vs Blue contrast)")
+        load_table = {"Band": list(iron_load.keys()), "Loading": list(iron_load.values())}
+        st.dataframe(load_table, use_container_width=True, hide_index=True)
+        st.metric("Iron Oxide Anomaly Coverage", f"{sat_data.get('crosta_iron_anomaly_pct', 0)}%")
+    with lc2:
+        st.markdown("#### Clay/Hydroxyl PCA Eigenvector Loadings")
+        st.markdown(f"Selected **PC{sat_data.get('crosta_clay_pc', '?')+1}** (strongest SWIR1 vs SWIR2 contrast)")
+        load_table2 = {"Band": list(clay_load.keys()), "Loading": list(clay_load.values())}
+        st.dataframe(load_table2, use_container_width=True, hide_index=True)
+        st.metric("Clay Alteration Anomaly Coverage", f"{sat_data.get('crosta_clay_anomaly_pct', 0)}%")
+
+    # PCA images
+    pc1, pc2 = st.columns(2)
+    with pc1:
+        st.markdown("#### 🔶 Crosta Iron Oxide PCA")
+        st.caption("PC image highlighting ferric iron oxide — bright = gossan/iron-stained zones")
+        st.pyplot(make_fig(sat_data["crosta_iron_pca"], cmap="RdYlBu_r",
+                           title=f"Crosta Iron Oxide (PC{sat_data.get('crosta_iron_pc', 0)+1})",
+                           label="PC Score"), use_container_width=True); plt.close()
+    with pc2:
+        st.markdown("#### 🟡 Crosta Clay/Hydroxyl PCA")
+        st.caption("PC image highlighting clay alteration — bright = argillic/phyllic zones")
+        st.pyplot(make_fig(sat_data["crosta_clay_pca"], cmap="YlOrBr",
+                           title=f"Crosta Clay (PC{sat_data.get('crosta_clay_pc', 0)+1})",
+                           label="PC Score"), use_container_width=True); plt.close()
+
+    st.info("ℹ️ The Crosta Technique identifies which Principal Component captures the spectral contrast between target mineral bands. Bright pixels in these PCA images represent zones of concentrated alteration minerals — direct indicators of hydrothermal gold systems.")
+
+    # ========================================================
+    # STRUCTURAL LINEAMENT & INTERSECTION ANALYSIS
+    # ========================================================
+    st.markdown("---")
+    st.markdown("## 🏔️ Structural Lineament & Intersection Analysis")
+    st.caption("Directional Sobel filtering on SWIR1 imagery to detect faults, fractures, and shear zones. Intersection points (where lineaments of different orientations cross) are the most prospective structural nodes for gold mineralization.")
+
+    lm1, lm2 = st.columns(2)
+    with lm1:
+        st.markdown("#### 📏 Lineament Density Map")
+        st.caption("Combined density of all orientations (N-S, E-W, NE-SW, NW-SE)")
+        st.pyplot(make_fig(sat_data["lineament_density_map"], cmap="hot",
+                           title="Structural Lineament Density", label="Density (0-4)"), use_container_width=True); plt.close()
+    with lm2:
+        st.markdown("#### ⚡ Lineament Intersection Map")
+        st.caption("Where lineaments of different orientations cross — high-prospectivity nodes")
+        st.pyplot(make_fig(sat_data["intersection_map"], cmap="magma",
+                           title="Lineament Intersection Density", label="Intersection Index"), use_container_width=True); plt.close()
+
+    # Per-orientation maps
+    st.markdown("---")
+    st.markdown("### 🧭 Per-Orientation Lineament Maps")
+
+    ori1, ori2 = st.columns(2)
+    with ori1:
+        st.markdown("#### ↕️ N-S Lineaments")
+        st.pyplot(make_fig(sat_data["lineament_ns_map"], cmap="gray",
+                           title="North-South Lineaments", label="Binary"), use_container_width=True); plt.close()
+    with ori2:
+        st.markdown("#### ↔️ E-W Lineaments")
+        st.pyplot(make_fig(sat_data["lineament_ew_map"], cmap="gray",
+                           title="East-West Lineaments", label="Binary"), use_container_width=True); plt.close()
+
+    ori3, ori4 = st.columns(2)
+    with ori3:
+        st.markdown("#### ↗️ NE-SW Lineaments")
+        st.pyplot(make_fig(sat_data["lineament_nesw_map"], cmap="gray",
+                           title="NE-SW Lineaments", label="Binary"), use_container_width=True); plt.close()
+    with ori4:
+        st.markdown("#### ↖️ NW-SE Lineaments")
+        st.pyplot(make_fig(sat_data["lineament_nwse_map"], cmap="gray",
+                           title="NW-SE Lineaments", label="Binary"), use_container_width=True); plt.close()
+
+    # Metrics
+    st.markdown("---")
+    lm_c1, lm_c2, lm_c3 = st.columns(3)
+    lm_c1.metric("Lineament Density Index", sat_data.get("lineament_density_val", 0))
+    lm_c2.metric("High-Confidence Intersections", sat_data.get("intersection_count", 0))
+    lm_c3.metric("Intersection Density Index", sat_data.get("intersection_density_val", 0))
+
+    st.info("ℹ️ Gold-bearing fluids travel along faults and fractures. When structures of different orientations intersect, they create zones of high permeability where gold precipitates. The intersection map above highlights these critical target nodes within the concession boundary.")
 
     st.markdown("---")
-    st.info(
-        "ℹ️ Yellow polygon = real concession boundary from INAMI cadastre. "
-        "All spectral indices from Landsat Collection 2 Level-2 surface reflectance "
-        "via Microsoft Planetary Computer."
-    )
+    st.info("ℹ️ All spectral indices from Landsat Collection 2 Level-2 via Microsoft Planetary Computer. Yellow polygon = INAMI concession boundary.")
 
 # ========================================================
 # IBM WATSONX GEOLOGICAL REPORT
@@ -411,9 +429,31 @@ if st.button("🚀 Generate 5-Way Geological Synthesis", use_container_width=Tru
             f"- Densidade de Falhas: {m_data.get('Way_2_Fault_Density_Index', 0.8)}\n"
             f"- Silicification: {m_data.get('Way_3_Silica_Flooding_Cap', 0.6)}\n"
             f"- Estresse Geobotânico (NDVI): {m_data.get('Way_4_Geobotanical_Stress', 0.34)}\n"
-            f"- WLC Prospectivity: {m_data.get('Way_5_WLC_Score_Percent', 88.5)}%\n\n"
+            f"- WLC Prospectivity: {m_data.get('Way_5_WLC_Score_Percent', 88.5)}%\n"
+        )
+
+        if sat_data:
+            prompt += (
+                "\nAnálise Crosta PCA:\n"
+                f"- Iron Oxide PCA (PC{sat_data.get('crosta_iron_pc',0)+1}): mean={sat_data.get('crosta_iron_mean',0)}, "
+                f"anomaly coverage={sat_data.get('crosta_iron_anomaly_pct',0)}%\n"
+                f"- Clay PCA (PC{sat_data.get('crosta_clay_pc',0)+1}): mean={sat_data.get('crosta_clay_mean',0)}, "
+                f"anomaly coverage={sat_data.get('crosta_clay_anomaly_pct',0)}%\n"
+                f"- Iron loadings: {sat_data.get('crosta_iron_loadings', {})}\n"
+                f"- Clay loadings: {sat_data.get('crosta_clay_loadings', {})}\n\n"
+                "Análise Estrutural (Lineamentos):\n"
+                f"- Densidade de Lineamentos: {sat_data.get('lineament_density_val', 0)}\n"
+                f"- Intersecções de Alta Confiança: {sat_data.get('intersection_count', 0)}\n"
+                f"- Índice de Densidade de Intersecção: {sat_data.get('intersection_density_val', 0)}\n\n"
+            )
+
+        prompt += (
+            "Directrizes da Tarefa:\n"
             "Escreva um parecer técnico formal em português. Analise a associação mineralógica. "
-            "Conclua com recomendações de campo e parecer 'Perfurar / Não Perfurar'."
+            "Integre os resultados do Crosta PCA (anomalias de alteração) com a análise de "
+            "intersecções estruturais para identificar os alvos mais promissores dentro da concessão. "
+            "Conclua com recomendações de campo (amostragem de solo, trincheiras, sondagens) "
+            "e um parecer final de 'Perfurar / Não Perfurar' (Drill/No-Drill)."
         )
 
         model = ModelInference(
