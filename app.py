@@ -54,8 +54,9 @@ def get_watsonx_client():
 # ========================================================
 # 2. APPLICATION RUNTIME SESSION STATE
 # ========================================================
+# Default center: real coordinates of license 11521 (Tete Platinum concession)
 if "map_center" not in st.session_state:
-    st.session_state["map_center"] = [-15.8234, 33.6120]
+    st.session_state["map_center"] = [-15.095314, 32.567917]
 if "active_polygon" not in st.session_state:
     st.session_state["active_polygon"] = None
 if "concession_metadata" not in st.session_state:
@@ -84,7 +85,7 @@ st.sidebar.header("🎯 Portal de Seleção de Alvos")
 
 selected_basemap = st.sidebar.selectbox(
     "🗺️ Select Map Layer View",
-    ["Google Satellite Imagery", "OpenStreetMap (Standard)", "Esri Topographic Map", "Stamen Terrain"]
+    ["Esri World Imagery (Satellite)", "Google Satellite Imagery", "OpenStreetMap (Standard)", "Esri Topographic Map"]
 )
 
 selected_year = st.sidebar.slider("Select Analysis Year", min_value=1990, max_value=2026, value=2024, step=1)
@@ -93,7 +94,7 @@ search_method = st.sidebar.radio("Select Landfolio Lookup Method", ["(a) License
 if search_method == "(a) License # Search":
     license_num = st.sidebar.text_input("Enter License Number (Real Database Match)", placeholder="e.g., 11521")
     if license_num:
-        with st.sidebar.spinner("Buscando dados em tempo real no Cadastro Nacional..."):
+        with st.sidebar.spinner("Buscando dados em tempo real no Cadastro Nacional (INAMI)..."):
             db_result = get_real_mozambique_cadastre(license_num)
             if db_result["found"]:
                 st.session_state["map_center"] = [db_result["lat"], db_result["lon"]]
@@ -101,9 +102,9 @@ if search_method == "(a) License # Search":
                 st.session_state["concession_metadata"] = db_result["metadata"]
                 st.session_state["satellite_data"] = None  # force re-fetch
                 st.session_state["m_data"] = None
-                st.sidebar.success(f"✓ Concessão {license_num} carregada!")
+                st.sidebar.success(f"✓ Concessão {license_num} carregada! Geometry fetched from INAMI.")
             else:
-                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada nos servidores.")
+                st.sidebar.error(f"❌ Licença '{license_num}' não encontrada nos servidores INAMI.")
 
 elif search_method == "(c) Map Selection":
     st.sidebar.info("👉 Clique em qualquer ponto de Moçambique no mapa para capturar as coordenadas reais do terreno.")
@@ -119,18 +120,54 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("🗺️ Live Geographic Registry View")
 
-    if selected_basemap == "Google Satellite Imagery":
-        m = folium.Map(location=st.session_state["map_center"], zoom_start=11, tiles="https://google.com{x}&y={y}&z={z}", attr="Google Satellite")
+    # Use proper working tile URLs
+    if selected_basemap == "Esri World Imagery (Satellite)":
+        m = folium.Map(
+            location=st.session_state["map_center"],
+            zoom_start=11,
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri World Imagery"
+        )
+    elif selected_basemap == "Google Satellite Imagery":
+        m = folium.Map(
+            location=st.session_state["map_center"],
+            zoom_start=11,
+            tiles="https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+            attr="Google Satellite"
+        )
     elif selected_basemap == "Esri Topographic Map":
-        m = folium.Map(location=st.session_state["map_center"], zoom_start=11, tiles="https://arcgisonline.com{z}/{y}/{x}", attr="Esri Topo Map")
+        m = folium.Map(
+            location=st.session_state["map_center"],
+            zoom_start=11,
+            tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+            attr="Esri Topographic"
+        )
     else:
         m = folium.Map(location=st.session_state["map_center"], zoom_start=11)
 
+    # Draw the concession polygon if loaded
     if st.session_state["active_polygon"]:
         folium.GeoJson(
             st.session_state["active_polygon"],
             name="Real Concession Boundary",
-            style_function=lambda x: {"fillColor": "#00E5FF", "color": "#004D40", "weight": 3, "fillOpacity": 0.4}
+            style_function=lambda x: {
+                "fillColor": "#00E5FF",
+                "color": "#FFD700",
+                "weight": 4,
+                "fillOpacity": 0.3
+            },
+            tooltip=folium.GeoJsonTooltip(
+                fields=["name"],
+                aliases=["Concession:"],
+                style="background-color: #004D40; color: white; font-weight: bold; padding: 5px; border-radius: 3px;"
+            )
+        ).add_to(m)
+
+        # Also add a marker at the center
+        folium.Marker(
+            location=st.session_state["map_center"],
+            tooltip=st.session_state["concession_metadata"].get("Nome da Concessão", "Concession Center"),
+            icon=folium.Icon(color="red", icon="info-sign")
         ).add_to(m)
 
     map_data = st_folium(m, width=550, height=380, key=f"map_{selected_basemap}_{st.session_state['map_center']}")
@@ -154,7 +191,7 @@ with col1:
         st.session_state["m_data"] = None
         st.rerun()
 
-    st.write("### 📋 Registo Oficial em Tempo Real (Trimble Landfolio)")
+    st.write("### 📋 Registo Oficial em Tempo Real (Trimble Landfolio / INAMI)")
     st.table(st.session_state["concession_metadata"])
 
 # ========================================================
