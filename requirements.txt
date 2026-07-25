@@ -6,4 +6,5 @@ pystac-client>=0.8.2
 planetary-computer>=1.0.0
 rasterio
 numpy
+matplotlib>=3.7.0
 fpdf2>=2.7.0
