@@ -297,6 +297,15 @@ def _extract_lineaments(swir1):
     nesw_map = _threshold_and_smooth(grad_nesw)
     nwse_map = _threshold_and_smooth(grad_nwse)
 
+    # Crop all maps to the same minimum shape before combining
+    # (Sobel keeps full size; sliding_window_view trims 1px per side)
+    min_h = min(ns_map.shape[0], ew_map.shape[0], nesw_map.shape[0], nwse_map.shape[0])
+    min_w = min(ns_map.shape[1], ew_map.shape[1], nesw_map.shape[1], nwse_map.shape[1])
+    ns_map   = ns_map[:min_h, :min_w]
+    ew_map   = ew_map[:min_h, :min_w]
+    nesw_map = nesw_map[:min_h, :min_w]
+    nwse_map = nwse_map[:min_h, :min_w]
+
     combined = ns_map + ew_map + nesw_map + nwse_map
     lineament_density_map = gaussian_filter(combined, sigma=3)
     intersection_map = (
@@ -546,11 +555,19 @@ def _read_band_window(url, bbox_4326):
 
 
 def _get_search_items(search):
-    for method in ["get_items", "get_all_items"]:
-        try:
-            return list(getattr(search, method)())
-        except (AttributeError, TypeError):
-            pass
+    import time
+    last_err = None
+    for attempt in range(3):
+        for method in ["items", "get_items", "get_all_items"]:
+            try:
+                return list(getattr(search, method)())
+            except (AttributeError, TypeError):
+                pass
+            except Exception as e:
+                last_err = e
+                break  # timeout/API error — retry
+        if attempt < 2:
+            time.sleep(3)
     try:
         return list(search)
     except TypeError:
@@ -558,7 +575,10 @@ def _get_search_items(search):
     try:
         return search.get_item_collection().items
     except Exception:
-        raise RuntimeError("Cannot retrieve items from STAC search")
+        err_msg = str(last_err)[:200] if last_err else "unknown"
+        if "504" in err_msg or "Gateway" in err_msg or "Timeout" in err_msg:
+            raise RuntimeError("Microsoft Planetary Computer is temporarily unavailable (504 Gateway Timeout). Please try again in a few minutes.")
+        raise RuntimeError(f"Cannot retrieve STAC items: {err_msg}")
 
 
 def _get_asset_url(item, possible_keys):
