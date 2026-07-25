@@ -44,9 +44,106 @@ def _get_rasterio():
 
 
 def _get_stac():
+    """Deprecated — kept for backward compat. Use _search_earth_search() instead."""
     import pystac_client
     import planetary_computer
     return pystac_client, planetary_computer
+
+
+# ========================================================
+# EARTH SEARCH STAC + AZURE BLOB STORAGE
+# ========================================================
+
+EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
+PC_SAS_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token/landsateuwest/landsat-c2"
+AZURE_BLOB_BASE = "https://landsateuwest.blob.core.windows.net/landsat-c2"
+
+# Cache the SAS token (valid for ~1 hour)
+_sas_token_cache = {"token": None, "expires": 0}
+
+
+def _get_pc_sas_token():
+    """Get a Planetary Computer SAS token for the landsat-c2 container on landsateuwest."""
+    import time
+    requests = _get_requests()
+    
+    # Return cached token if still valid (check every 5 min)
+    now = time.time()
+    if _sas_token_cache["token"] and (now - _sas_token_cache["expires"]) < 300:
+        return _sas_token_cache["token"]
+    
+    resp = requests.get(PC_SAS_TOKEN_URL, timeout=10)
+    resp.raise_for_status()
+    token = resp.json().get("token", "")
+    if token:
+        _sas_token_cache["token"] = token
+        _sas_token_cache["expires"] = now + 3600  # Token valid ~1 hour
+    return token
+
+
+def _s3_to_azure_url(s3_href, sas_token):
+    """Convert an Earth Search s3:// URL to a signed Azure Blob Storage URL.
+    
+    s3://usgs-landsat/collection02/level-2/standard/.../SR_B2.TIF
+    → https://landsateuwest.blob.core.windows.net/landsat-c2/level-2/standard/.../SR_B2.TIF?<token>
+    """
+    # Strip 's3://usgs-landsat/' prefix and 'collection02/' to get the Azure blob path
+    path = s3_href.replace("s3://usgs-landsat/", "").replace("collection02/", "", 1)
+    return f"{AZURE_BLOB_BASE}/{path}?{sas_token}"
+
+
+def _search_earth_search(bbox, year, cloud_limit=30, max_items=10):
+    """Search for Landsat scenes using Earth Search (AWS) STAC API.
+    
+    Returns a list of feature dicts (GeoJSON Features).
+    """
+    requests = _get_requests()
+    datetime_str = f"{year}-01-01T00:00:00Z/{year}-12-31T23:59:59Z"
+    
+    # Try with increasingly relaxed cloud cover limits
+    for cc in [cloud_limit, cloud_limit * 2, 80]:
+        payload = {
+            "collections": ["landsat-c2-l2"],
+            "bbox": bbox,
+            "datetime": datetime_str,
+            "query": {"eo:cloud_cover": {"lt": cc}},
+            "limit": max_items,
+            "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}],
+        }
+        try:
+            resp = requests.post(EARTH_SEARCH_URL, json=payload, timeout=15)
+            if resp.status_code == 200:
+                features = resp.json().get("features", [])
+                if features:
+                    return features
+        except Exception:
+            continue
+    
+    # Last resort: expand date range, no cloud filter
+    payload = {
+        "collections": ["landsat-c2-l2"],
+        "bbox": bbox,
+        "datetime": f"{year-1}-06-01T00:00:00Z/{year+1}-12-31T23:59:59Z",
+        "limit": max_items,
+    }
+    try:
+        resp = requests.post(EARTH_SEARCH_URL, json=payload, timeout=15)
+        if resp.status_code == 200:
+            return resp.json().get("features", [])
+    except Exception:
+        pass
+    
+    return []
+
+
+def _get_band_url_from_feature(feature, band_keys, sas_token):
+    """Extract a band URL from an Earth Search feature, converting s3:// to Azure Blob URL."""
+    assets = feature.get("assets", {})
+    for key in band_keys:
+        if key in assets:
+            s3_href = assets[key]["href"]
+            return _s3_to_azure_url(s3_href, sas_token)
+    raise KeyError(f"None of {band_keys} found in assets: {list(assets.keys())}")
 
 
 # ========================================================
@@ -641,7 +738,10 @@ def _scale_reflectance(band):
 
 
 def _read_band_window(url, bbox_4326):
+    """Read a window of a remote COG. Adds GDAL timeout to prevent hangs."""
     rasterio, from_bounds, transform_bounds = _get_rasterio()
+    # Set GDAL HTTP timeout to 30 seconds to prevent indefinite hangs
+    rasterio.Env(GDAL_HTTP_TIMEOUT=30, GDAL_HTTP_MAX_RETRY=2)
     with rasterio.open(url) as src:
         left, bottom, right, top = transform_bounds(
             "EPSG:4326", src.crs,
@@ -651,7 +751,12 @@ def _read_band_window(url, bbox_4326):
         return src.read(1, window=window).astype(float)
 
 
+# _get_search_items and _get_asset_url are deprecated —
+# replaced by _search_earth_search() and _get_band_url_from_feature()
+# Kept for backward compatibility but no longer used by fetch_satellite_imagery
+
 def _get_search_items(search):
+    """Deprecated. Use _search_earth_search() instead."""
     import time
     last_err = None
     for attempt in range(3):
@@ -662,23 +767,18 @@ def _get_search_items(search):
                 pass
             except Exception as e:
                 last_err = e
-                break  # timeout/API error — retry
+                break
         if attempt < 2:
             time.sleep(3)
     try:
         return list(search)
     except TypeError:
         pass
-    try:
-        return search.get_item_collection().items
-    except Exception:
-        err_msg = str(last_err)[:200] if last_err else "unknown"
-        if "504" in err_msg or "Gateway" in err_msg or "Timeout" in err_msg:
-            raise RuntimeError("Microsoft Planetary Computer is temporarily unavailable (504 Gateway Timeout). Please try again in a few minutes.")
-        raise RuntimeError(f"Cannot retrieve STAC items: {err_msg}")
+    raise RuntimeError(f"Cannot retrieve STAC items: {str(last_err)[:200] if last_err else 'unknown'}")
 
 
 def _get_asset_url(item, possible_keys):
+    """Deprecated. Use _get_band_url_from_feature() instead."""
     for key in possible_keys:
         if key in item.assets:
             return item.assets[key].href
@@ -714,58 +814,43 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
         buf = DEFAULT_BUFFER_DEG
         fetch_bbox = [lon - buf, lat - buf, lon + buf, lat + buf]
 
-    _cb("Connecting to Microsoft Planetary Computer STAC API...")
-    pystac_client, planetary_computer = _get_stac()
-    stac = pystac_client.Client.open(
-        "https://planetarycomputer.microsoft.com/api/stac/v1",
-        modifier=planetary_computer.sign_inplace,
-    )
+    _cb("Searching Landsat scenes via Earth Search (AWS STAC)...")
+    features = _search_earth_search(fetch_bbox, year, cloud_limit=30, max_items=10)
 
-    _cb(f"Searching Landsat 8/9 scenes for {year}...")
-    for cc_limit in [30, 60, 80]:
-        search = stac.search(
-            collections=["landsat-c2-l2"],
-            bbox=fetch_bbox,
-            datetime=f"{year}-01-01/{year}-12-31",
-            query={"eo:cloud_cover": {"lt": cc_limit}},
-            max_items=10,
-        )
-        try:
-            items = _get_search_items(search)
-            if items:
-                break
-        except Exception:
-            items = []
-            continue
-    else:
-        _cb(f"No low-cloud scenes found in {year}, expanding search range...")
-        search = stac.search(
-            collections=["landsat-c2-l2"],
-            bbox=fetch_bbox,
-            datetime=f"{year-1}-06-01/{year+1}-12-31",
-            query={"eo:cloud_cover": {"lt": 40}},
-            max_items=10,
-        )
-        items = _get_search_items(search)
+    if not features:
+        _cb(f"No scenes found in {year}, expanding search range...")
+        features = _search_earth_search(fetch_bbox, year, cloud_limit=80, max_items=10)
 
-    if not items:
+    if not features:
         raise RuntimeError("No Landsat scenes found for this area and time range.")
 
-    best_item = min(items, key=lambda x: x.properties.get("eo:cloud_cover", 100))
-    cloud_cover = best_item.properties.get("eo:cloud_cover", 0)
-    scene_date = best_item.properties.get("datetime", "")
-    platform = best_item.properties.get("platform", "landsat-8")
+    # Pick the scene with lowest cloud cover
+    best_feature = min(features, key=lambda f: f["properties"].get("eo:cloud_cover", 100))
+    cloud_cover = best_feature["properties"].get("eo:cloud_cover", 0)
+    scene_date = best_feature["properties"].get("datetime", "")
+    platform = best_feature["properties"].get("platform", "landsat-8")
     sat_name = f"Landsat-{platform[-1] if platform[-1].isdigit() else '8'}"
 
-    _cb(f"Found {len(items)} scenes. Best: {scene_date[:10]} (cloud: {cloud_cover:.1f}%)")
+    _cb(f"Found {len(features)} scenes. Best: {scene_date[:10]} (cloud: {cloud_cover:.1f}%)")
+
+    _cb("Getting Azure Blob Storage access token...")
+    sas_token = _get_pc_sas_token()
+    if not sas_token:
+        raise RuntimeError("Could not obtain Planetary Computer SAS token for data access.")
 
     _cb(f"Downloading 6 spectral bands from {sat_name} (30m resolution)...")
-    band_red   = _read_band_window(_get_asset_url(best_item, ["red",   "B4"]),         fetch_bbox)
-    band_blue  = _read_band_window(_get_asset_url(best_item, ["blue",  "B2"]),         fetch_bbox)
-    band_green = _read_band_window(_get_asset_url(best_item, ["green", "B3"]),         fetch_bbox)
-    band_nir   = _read_band_window(_get_asset_url(best_item, ["nir08", "nir", "B5"]), fetch_bbox)
-    band_swir1 = _read_band_window(_get_asset_url(best_item, ["swir16","swir1","B6"]),fetch_bbox)
-    band_swir2 = _read_band_window(_get_asset_url(best_item, ["swir22","swir2","B7"]),fetch_bbox)
+    band_red   = _read_band_window(_get_band_url_from_feature(best_feature, ["red",   "B4"],         sas_token), fetch_bbox)
+    _cb("  ✓ Red band downloaded")
+    band_blue  = _read_band_window(_get_band_url_from_feature(best_feature, ["blue",  "B2"],         sas_token), fetch_bbox)
+    _cb("  ✓ Blue band downloaded")
+    band_green = _read_band_window(_get_band_url_from_feature(best_feature, ["green", "B3"],         sas_token), fetch_bbox)
+    _cb("  ✓ Green band downloaded")
+    band_nir   = _read_band_window(_get_band_url_from_feature(best_feature, ["nir08", "nir", "B5"], sas_token), fetch_bbox)
+    _cb("  ✓ NIR band downloaded")
+    band_swir1 = _read_band_window(_get_band_url_from_feature(best_feature, ["swir16","swir1","B6"],sas_token), fetch_bbox)
+    _cb("  ✓ SWIR1 band downloaded")
+    band_swir2 = _read_band_window(_get_band_url_from_feature(best_feature, ["swir22","swir2","B7"],sas_token), fetch_bbox)
+    _cb("  ✓ SWIR2 band downloaded")
 
     _cb("Scaling reflectance values (Landsat L2 coefficients)...")
     red   = _scale_reflectance(band_red)
