@@ -58,8 +58,8 @@ def _clean_pdf_text(text):
     }
     result = text
     for unicode_char, ascii_repl in replacements.items():
-        result = result.replace(chr(int(unicode_char.replace("\\u", ""), 16)), ascii_repl)
-    # Final fallback: encode to latin-1 with replacement for anything still unsupported
+        result = result.replace(unicode_char, ascii_repl)
+    # Final fallback: encode to ascii with replacement for anything still unsupported
     return result.encode("ascii", "replace").decode("ascii")
 
 
@@ -728,7 +728,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     rc3, rc4 = st.columns(2)
     with rc3:
         report_date = st.date_input("Report Date (Data do Relatorio)",
-            value=datetime.now())
+            value=st.session_state.get("report_date", datetime.now().date()))
     with rc4:
         report_classification = st.selectbox("Document Classification", [
             "Confidencial - Uso Interno",
@@ -836,13 +836,22 @@ Use terminologia geologica tecnica. Seja especifico e quantitativo."""
         st.markdown("---")
         st.markdown("### 📄 Export Professional Report")
 
+        # Pre-define variables for both try and except blocks
+        conces_name = meta.get('Nome da Concessao', meta.get('Nome da Concessão', 'Concessao'))
+        lic_code = meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))
+        author = st.session_state.get("report_author", "N/A")
+        title = st.session_state.get("report_title", "N/A")
+        company = st.session_state.get("report_company", "N/A")
+        lic_no = st.session_state.get("report_license_no", "N/A")
+        ref_no = st.session_state.get("report_ref_no", "N/A")
+        r_date = st.session_state.get("report_date")
+        date_str = r_date.strftime("%d/%m/%Y") if r_date else "N/A"
+
         # Build professional PDF
         try:
             pdf = TechnicalReportPDF()
             pdf.alias_nb_pages()
-            pdf.author_name = st.session_state.get("report_author", "")
-            conces_name = meta.get('Nome da Concessao', meta.get('Nome da Concessão', 'Concessao'))
-            lic_code = meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))
+            pdf.author_name = author
             pdf.report_title = f"Parecer Tecnico - {conces_name}"
 
             # ── COVER PAGE ──────────────────────────────────────
@@ -895,14 +904,6 @@ Use terminologia geologica tecnica. Seja especifico e quantitativo."""
             pdf.ln(2)
             pdf.set_font('Helvetica', '', 10)
             pdf.set_text_color(40, 40, 40)
-
-            author = st.session_state.get("report_author", "N/A")
-            title = st.session_state.get("report_title", "N/A")
-            company = st.session_state.get("report_company", "N/A")
-            lic_no = st.session_state.get("report_license_no", "N/A")
-            ref_no = st.session_state.get("report_ref_no", "N/A")
-            r_date = st.session_state.get("report_date")
-            date_str = r_date.strftime("%d/%m/%Y") if r_date else "N/A"
 
             info_lines = [
                 f"Prepared by:    {author}",
