@@ -25,6 +25,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 
 class TechnicalReportPDF(FPDF):
@@ -288,7 +289,13 @@ with col2:
                 lat, lon = st.session_state["map_center"]
                 active_poly = st.session_state.get("active_polygon")
                 poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
-                sat_data = fetch_satellite_imagery(lat, lon, selected_year, bbox=poly_bbox)
+                # Run fetch with 120-second timeout to prevent hanging
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(fetch_satellite_imagery, lat, lon, selected_year, bbox=poly_bbox)
+                    try:
+                        sat_data = future.result(timeout=120)
+                    except FuturesTimeoutError:
+                        raise RuntimeError("Satellite fetch timed out after 120 seconds. Planetary Computer may be slow. Try again later.")
                 st.session_state["satellite_data"] = sat_data
                 st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":   sat_data["Way_1_Iron_Oxide_Gossan"],
