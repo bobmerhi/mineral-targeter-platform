@@ -5,10 +5,6 @@ import numpy as np
 import rasterio
 from rasterio.windows import from_bounds
 from rasterio.warp import transform_bounds
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import io
 
 
 def get_real_mozambique_cadastre(license_id):
@@ -18,7 +14,6 @@ def get_real_mozambique_cadastre(license_id):
     """
     clean_id = str(license_id).strip()
 
-    # INTERCEPTOR DE DADOS REAIS - LICENÇA 11521
     if clean_id == "11521" or clean_id.upper() == "11521CM":
         lat, lon = -15.8234, 33.6120
         size = 0.055
@@ -56,7 +51,6 @@ def get_real_mozambique_cadastre(license_id):
             }
         }
 
-    # CONSULTA DINÂMICA PARA OUTRAS LICENÇAS
     arcgis_url = "https://landfolio.com"
     where_clause = f"Code = '{clean_id}' OR Code = '{clean_id}CM' OR Code = '{clean_id}PR'"
     params = {
@@ -126,7 +120,6 @@ def _scale_reflectance(band):
 def _read_band_window(url, bbox_4326):
     """Read a single Landsat band clipped to a lat/lon bounding box."""
     with rasterio.open(url) as src:
-        # Transform WGS84 bounds to raster's native CRS (usually UTM)
         left, bottom, right, top = transform_bounds(
             "EPSG:4326", src.crs,
             bbox_4326[0], bbox_4326[1], bbox_4326[2], bbox_4326[3]
@@ -136,17 +129,43 @@ def _read_band_window(url, bbox_4326):
     return data
 
 
+def _get_search_items(search):
+    """Get items from a STAC search, handling different pystac-client versions."""
+    # Try different methods supported across pystac-client versions
+    try:
+        return list(search.get_items())
+    except (AttributeError, TypeError):
+        pass
+    try:
+        return list(search.get_all_items())
+    except (AttributeError, TypeError):
+        pass
+    try:
+        return list(search)
+    except TypeError:
+        pass
+    # Last resort: try items_as_dicts and wrap
+    try:
+        return search.get_item_collection().items
+    except Exception:
+        raise RuntimeError("Cannot retrieve items from STAC search — pystac-client API incompatible")
+
+
+def _get_asset_url(item, possible_keys):
+    """Get an asset URL trying multiple possible key names."""
+    for key in possible_keys:
+        if key in item.assets:
+            return item.assets[key].href
+    raise KeyError(f"None of {possible_keys} found in item assets: {list(item.assets.keys())}")
+
+
 def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
     """
     Fetch real Landsat 8/9 imagery from Microsoft Planetary Computer
     and compute spectral mineral indices for the target area.
-
-    Returns: dict with RGB composite, false-color, spectral index maps,
-             and computed 5-way statistics.
     """
     bbox = [lon - buffer_deg, lat - buffer_deg, lon + buffer_deg, lat + buffer_deg]
 
-    # Connect to Planetary Computer STAC
     stac = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
         modifier=planetary_computer.sign_inplace,
@@ -160,11 +179,9 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
         query={"eo:cloud_cover": {"lt": 30}},
         max_items=10,
     )
-
-    items = list(search)
+    items = _get_search_items(search)
 
     if not items:
-        # Try broader cloud cover threshold
         search = stac.search(
             collections=["landsat-c2-l2"],
             bbox=bbox,
@@ -172,10 +189,9 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
             query={"eo:cloud_cover": {"lt": 60}},
             max_items=10,
         )
-        items = list(search)
+        items = _get_search_items(search)
 
     if not items:
-        # Try adjacent years
         search = stac.search(
             collections=["landsat-c2-l2"],
             bbox=bbox,
@@ -183,7 +199,7 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
             query={"eo:cloud_cover": {"lt": 40}},
             max_items=10,
         )
-        items = list(search)
+        items = _get_search_items(search)
 
     if not items:
         raise RuntimeError("No Landsat scenes found for this area and time range.")
@@ -194,13 +210,13 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
     scene_date = best_item.properties.get("datetime", "")
     platform = best_item.properties.get("platform", "landsat-8")
 
-    # Read the relevant bands
-    band_red = _read_band_window(best_item.assets["red"].href, bbox)
-    band_blue = _read_band_window(best_item.assets["blue"].href, bbox)
-    band_green = _read_band_window(best_item.assets["green"].href, bbox)
-    band_nir = _read_band_window(best_item.assets["nir08"].href, bbox)
-    band_swir1 = _read_band_window(best_item.assets["swir16"].href, bbox)
-    band_swir2 = _read_band_window(best_item.assets["swir22"].href, bbox)
+    # Read the relevant bands (try multiple asset key names for compatibility)
+    band_red = _read_band_window(_get_asset_url(best_item, ["red", "B4"]), bbox)
+    band_blue = _read_band_window(_get_asset_url(best_item, ["blue", "B2"]), bbox)
+    band_green = _read_band_window(_get_asset_url(best_item, ["green", "B3"]), bbox)
+    band_nir = _read_band_window(_get_asset_url(best_item, ["nir08", "nir", "B5"]), bbox)
+    band_swir1 = _read_band_window(_get_asset_url(best_item, ["swir16", "swir1", "B6"]), bbox)
+    band_swir2 = _read_band_window(_get_asset_url(best_item, ["swir22", "swir2", "B7"]), bbox)
 
     # Scale to surface reflectance (0-1)
     red = _scale_reflectance(band_red)
@@ -212,19 +228,11 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
 
     # --- Spectral Indices ---
 
-    # Iron Oxide (Gossans): Red/Blue ratio — highlights ferric iron oxides
     iron_oxide_map = np.divide(red, blue + 1e-6)
-
-    # Clay/Hydroxyl: SWIR1/SWIR2 ratio — highlights hydrothermal clay alteration
     clay_map = np.divide(swir1, swir2 + 1e-6)
-
-    # NDVI: (NIR - Red) / (NIR + Red) — vegetation health/stress
     ndvi_map = np.divide(nir - red, nir + red + 1e-6)
-
-    # Silica proxy: SWIR2/SWIR1 ratio — reverse of clay, highlights silicified zones
     silica_map = np.divide(swir2, swir1 + 1e-6)
 
-    # Structural lineament proxy: gradient magnitude on SWIR1 (edge detection)
     grad_y, grad_x = np.gradient(swir1)
     edge_mag = np.sqrt(grad_x**2 + grad_y**2)
     fault_density_map = edge_mag
@@ -238,8 +246,7 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
     silica_val = round(float(np.nanmean(silica_map)), 2)
     ndvi_val = round(float(np.nanmean(ndvi_map)), 2)
 
-    # WLC (Weighted Linear Combination) prospectivity score
-    # Normalize each index to 0-1, then apply weights
+    # WLC prospectivity score
     def norm_01(arr):
         mn, mx = np.nanmin(arr), np.nanmax(arr)
         return (arr - mn) / (mx - mn + 1e-6)
@@ -249,7 +256,7 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
         0.20 * np.nanmean(norm_01(clay_map)) +
         0.15 * np.nanmean(norm_01(fault_density_map)) +
         0.15 * np.nanmean(norm_01(silica_map)) +
-        0.25 * (1.0 - np.nanmean(norm_01(np.abs(ndvi_map))))  # low NDVI = stress = good for minerals
+        0.25 * (1.0 - np.nanmean(norm_01(np.abs(ndvi_map))))
     )
     wlc_pct = round(float(np.clip(wlc_score * 100, 0, 100)), 1)
 
@@ -259,8 +266,6 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
         return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
 
     rgb = np.dstack([to_uint8(red), to_uint8(green), to_uint8(blue)])
-
-    # False color: SWIR1-NIR-Red — highlights mineral alteration in red/magenta tones
     false_color = np.dstack([to_uint8(swir1), to_uint8(nir), to_uint8(red)])
 
     # Clip index maps for better visualization
@@ -270,16 +275,13 @@ def fetch_satellite_imagery(lat, lon, year, buffer_deg=0.06):
     silica_disp = np.clip(silica_map, np.nanpercentile(silica_map, 2), np.nanpercentile(silica_map, 98))
 
     return {
-        # Image composites
         "rgb": rgb,
         "false_color": false_color,
-        # Spectral index maps (clipped for display)
         "iron_oxide_map": iron_oxide_disp,
         "clay_map": clay_disp,
         "ndvi_map": ndvi_disp,
         "silica_map": silica_disp,
         "fault_density_map": fault_density_map,
-        # 5-Way statistics
         "Way_1_Iron_Oxide_Gossan": iron_oxide_val,
         "Way_1_Clay_Phyllic": clay_val,
         "Way_2_Fault_Density_Index": fault_val,
