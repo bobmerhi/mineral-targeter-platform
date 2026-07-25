@@ -200,7 +200,5 @@ with col2:
                     "temperature": 0.7
                 }
             )
-            # Use chat API (non-deprecated) instead of text/generation
-            messages = [{"role": "user", "content": complete_prompt}]
-            result = model.generate_chat_text(messages=messages)
+            result = model.generate_text(prompt=complete_prompt)
             st.markdown(result)
