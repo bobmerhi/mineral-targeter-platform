@@ -11,6 +11,12 @@ from georemote import (
     fetch_satellite_imagery,
     polygon_to_bbox,
 )
+from export_utils import (
+    polygon_to_kml,
+    create_kmz_bundle,
+    create_geotiff_bundle,
+    create_png_bundle,
+)
 from fpdf import FPDF
 import matplotlib
 matplotlib.use("Agg")
@@ -313,7 +319,6 @@ if sat_data is not None:
     st.markdown("## 🔬 Crosta PCA — Hydrothermal Alteration Analysis")
     st.caption("Feature-Oriented Principal Component Analysis (Crosta Technique) — targeted PCA on Landsat band subsets to isolate alteration mineral signatures.")
 
-    # Show eigenvector loadings
     iron_load = sat_data.get("crosta_iron_loadings", {})
     clay_load = sat_data.get("crosta_clay_loadings", {})
 
@@ -321,87 +326,159 @@ if sat_data is not None:
     with lc1:
         st.markdown("#### Iron Oxide PCA Eigenvector Loadings")
         st.markdown(f"Selected **PC{sat_data.get('crosta_iron_pc', '?')+1}** (strongest Red vs Blue contrast)")
-        load_table = {"Band": list(iron_load.keys()), "Loading": list(iron_load.values())}
-        st.dataframe(load_table, use_container_width=True, hide_index=True)
+        st.dataframe({"Band": list(iron_load.keys()), "Loading": list(iron_load.values())}, use_container_width=True, hide_index=True)
         st.metric("Iron Oxide Anomaly Coverage", f"{sat_data.get('crosta_iron_anomaly_pct', 0)}%")
     with lc2:
         st.markdown("#### Clay/Hydroxyl PCA Eigenvector Loadings")
         st.markdown(f"Selected **PC{sat_data.get('crosta_clay_pc', '?')+1}** (strongest SWIR1 vs SWIR2 contrast)")
-        load_table2 = {"Band": list(clay_load.keys()), "Loading": list(clay_load.values())}
-        st.dataframe(load_table2, use_container_width=True, hide_index=True)
+        st.dataframe({"Band": list(clay_load.keys()), "Loading": list(clay_load.values())}, use_container_width=True, hide_index=True)
         st.metric("Clay Alteration Anomaly Coverage", f"{sat_data.get('crosta_clay_anomaly_pct', 0)}%")
 
-    # PCA images
     pc1, pc2 = st.columns(2)
     with pc1:
         st.markdown("#### 🔶 Crosta Iron Oxide PCA")
-        st.caption("PC image highlighting ferric iron oxide — bright = gossan/iron-stained zones")
-        st.pyplot(make_fig(sat_data["crosta_iron_pca"], cmap="RdYlBu_r",
-                           title=f"Crosta Iron Oxide (PC{sat_data.get('crosta_iron_pc', 0)+1})",
-                           label="PC Score"), use_container_width=True); plt.close()
+        st.caption("Bright = gossan/iron-stained zones")
+        st.pyplot(make_fig(sat_data["crosta_iron_pca"], cmap="RdYlBu_r", title=f"Crosta Iron Oxide (PC{sat_data.get('crosta_iron_pc', 0)+1})", label="PC Score"), use_container_width=True); plt.close()
     with pc2:
         st.markdown("#### 🟡 Crosta Clay/Hydroxyl PCA")
-        st.caption("PC image highlighting clay alteration — bright = argillic/phyllic zones")
-        st.pyplot(make_fig(sat_data["crosta_clay_pca"], cmap="YlOrBr",
-                           title=f"Crosta Clay (PC{sat_data.get('crosta_clay_pc', 0)+1})",
-                           label="PC Score"), use_container_width=True); plt.close()
+        st.caption("Bright = argillic/phyllic alteration zones")
+        st.pyplot(make_fig(sat_data["crosta_clay_pca"], cmap="YlOrBr", title=f"Crosta Clay (PC{sat_data.get('crosta_clay_pc', 0)+1})", label="PC Score"), use_container_width=True); plt.close()
 
-    st.info("ℹ️ The Crosta Technique identifies which Principal Component captures the spectral contrast between target mineral bands. Bright pixels in these PCA images represent zones of concentrated alteration minerals — direct indicators of hydrothermal gold systems.")
+    st.info("ℹ️ The Crosta Technique identifies which Principal Component captures the spectral contrast between target mineral bands. Bright pixels = concentrated alteration minerals — direct indicators of hydrothermal gold systems.")
 
     # ========================================================
     # STRUCTURAL LINEAMENT & INTERSECTION ANALYSIS
     # ========================================================
     st.markdown("---")
     st.markdown("## 🏔️ Structural Lineament & Intersection Analysis")
-    st.caption("Directional Sobel filtering on SWIR1 imagery to detect faults, fractures, and shear zones. Intersection points (where lineaments of different orientations cross) are the most prospective structural nodes for gold mineralization.")
+    st.caption("Directional Sobel filtering on SWIR1 imagery to detect faults, fractures, and shear zones. Intersection points = highest-prospectivity structural nodes for gold mineralization.")
 
     lm1, lm2 = st.columns(2)
     with lm1:
         st.markdown("#### 📏 Lineament Density Map")
-        st.caption("Combined density of all orientations (N-S, E-W, NE-SW, NW-SE)")
-        st.pyplot(make_fig(sat_data["lineament_density_map"], cmap="hot",
-                           title="Structural Lineament Density", label="Density (0-4)"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["lineament_density_map"], cmap="hot", title="Structural Lineament Density", label="Density (0-4)"), use_container_width=True); plt.close()
     with lm2:
         st.markdown("#### ⚡ Lineament Intersection Map")
-        st.caption("Where lineaments of different orientations cross — high-prospectivity nodes")
-        st.pyplot(make_fig(sat_data["intersection_map"], cmap="magma",
-                           title="Lineament Intersection Density", label="Intersection Index"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["intersection_map"], cmap="magma", title="Lineament Intersection Density", label="Intersection Index"), use_container_width=True); plt.close()
 
-    # Per-orientation maps
     st.markdown("---")
     st.markdown("### 🧭 Per-Orientation Lineament Maps")
-
     ori1, ori2 = st.columns(2)
     with ori1:
         st.markdown("#### ↕️ N-S Lineaments")
-        st.pyplot(make_fig(sat_data["lineament_ns_map"], cmap="gray",
-                           title="North-South Lineaments", label="Binary"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["lineament_ns_map"], cmap="gray", title="North-South Lineaments", label="Binary"), use_container_width=True); plt.close()
     with ori2:
         st.markdown("#### ↔️ E-W Lineaments")
-        st.pyplot(make_fig(sat_data["lineament_ew_map"], cmap="gray",
-                           title="East-West Lineaments", label="Binary"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["lineament_ew_map"], cmap="gray", title="East-West Lineaments", label="Binary"), use_container_width=True); plt.close()
 
     ori3, ori4 = st.columns(2)
     with ori3:
         st.markdown("#### ↗️ NE-SW Lineaments")
-        st.pyplot(make_fig(sat_data["lineament_nesw_map"], cmap="gray",
-                           title="NE-SW Lineaments", label="Binary"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["lineament_nesw_map"], cmap="gray", title="NE-SW Lineaments", label="Binary"), use_container_width=True); plt.close()
     with ori4:
         st.markdown("#### ↖️ NW-SE Lineaments")
-        st.pyplot(make_fig(sat_data["lineament_nwse_map"], cmap="gray",
-                           title="NW-SE Lineaments", label="Binary"), use_container_width=True); plt.close()
+        st.pyplot(make_fig(sat_data["lineament_nwse_map"], cmap="gray", title="NW-SE Lineaments", label="Binary"), use_container_width=True); plt.close()
 
-    # Metrics
     st.markdown("---")
     lm_c1, lm_c2, lm_c3 = st.columns(3)
     lm_c1.metric("Lineament Density Index", sat_data.get("lineament_density_val", 0))
     lm_c2.metric("High-Confidence Intersections", sat_data.get("intersection_count", 0))
     lm_c3.metric("Intersection Density Index", sat_data.get("intersection_density_val", 0))
 
-    st.info("ℹ️ Gold-bearing fluids travel along faults and fractures. When structures of different orientations intersect, they create zones of high permeability where gold precipitates. The intersection map above highlights these critical target nodes within the concession boundary.")
+    st.info("ℹ️ Gold-bearing fluids travel along faults and fractures. When structures of different orientations intersect, they create zones of high permeability where gold precipitates. The intersection map highlights these critical target nodes within the concession.")
+
+    # ========================================================
+    # EXPORT & GOOGLE EARTH INTEGRATION
+    # ========================================================
+    st.markdown("---")
+    st.markdown("## 📥 Export & Google Earth Integration")
+    st.caption("Export the concession geometry and all satellite imagery / spectral index maps in various formats for use in Google Earth, QGIS, ArcGIS, or reports.")
+
+    exp_col1, exp_col2 = st.columns(2)
+
+    with exp_col1:
+        st.markdown("### 📐 Concession Geometry")
+
+        # KML export for polygon
+        if active_poly:
+            kml_str = polygon_to_kml(active_poly, st.session_state.get("concession_metadata"))
+            if kml_str:
+                st.download_button(
+                    label="📐 Export Concession Boundary (KML)",
+                    data=kml_str.encode("utf-8"),
+                    file_name=f"concession_{st.session_state['concession_metadata'].get('Código da Licença (Code)', 'unknown')}.kml",
+                    mime="application/vnd.google-earth.kml+xml",
+                    use_container_width=True,
+                )
+                st.caption("Opens directly in Google Earth — polygon with concession metadata")
+        else:
+            st.info("Load a license to export the concession geometry.")
+
+        # GeoJSON export
+        if active_poly:
+            import json
+            geojson_bytes = json.dumps(active_poly, indent=2).encode("utf-8")
+            st.download_button(
+                label="🗺️ Export Concession Boundary (GeoJSON)",
+                data=geojson_bytes,
+                file_name=f"concession_{st.session_state['concession_metadata'].get('Código da Licença (Code)', 'unknown')}.geojson",
+                mime="application/geo+json",
+                use_container_width=True,
+            )
+            st.caption("For QGIS, ArcGIS, or any GeoJSON-compatible tool")
+
+    with exp_col2:
+        st.markdown("### 🛰️ Satellite Image Exports")
+
+        # KMZ bundle (Google Earth)
+        kmz_bytes = create_kmz_bundle(
+            sat_data,
+            polygon_geojson=active_poly,
+            metadata=st.session_state.get("concession_metadata"),
+            fetch_bbox=fetch_bbox,
+        )
+        if kmz_bytes:
+            st.download_button(
+                label="🌍 Export All Overlays (KMZ — Google Earth)",
+                data=kmz_bytes,
+                file_name=f"satintel_overlays_{sat_data.get('scene_date', '')}.kmz",
+                mime="application/vnd.google-earth.kmz",
+                use_container_width=True,
+            )
+            st.caption("Contains polygon + 10 georeferenced image overlays. Just open in Google Earth.")
+
+    # GeoTIFF and PNG bundles
+    st.markdown("---")
+    exp2_c1, exp2_c2 = st.columns(2)
+
+    with exp2_c1:
+        geotiff_bytes = create_geotiff_bundle(sat_data, fetch_bbox=fetch_bbox)
+        if geotiff_bytes:
+            st.download_button(
+                label="📊 Export All Rasters (GeoTIFF — QGIS/ArcGIS)",
+                data=geotiff_bytes,
+                file_name=f"satintel_geotiffs_{sat_data.get('scene_date', '')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            st.caption("10 GeoTIFF rasters (EPSG:4326) — georeferenced, ready for GIS analysis")
+        else:
+            st.warning("GeoTIFF export requires rasterio (already in requirements).")
+
+    with exp2_c2:
+        png_bytes = create_png_bundle(sat_data)
+        if png_bytes:
+            st.download_button(
+                label="🖼️ Export All Images (PNG — Reports)",
+                data=png_bytes,
+                file_name=f"satintel_images_{sat_data.get('scene_date', '')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            st.caption("10 high-res PNGs — for presentations, reports, and documentation")
 
     st.markdown("---")
-    st.info("ℹ️ All spectral indices from Landsat Collection 2 Level-2 via Microsoft Planetary Computer. Yellow polygon = INAMI concession boundary.")
+    st.info("ℹ️ **KMZ** = Google Earth (polygon + image overlays georeferenced automatically). **GeoTIFF** = QGIS/ArcGIS (rasters with coordinate system). **PNG** = reports & presentations. **KML** = concession boundary only (opens in Google Earth).")
 
 # ========================================================
 # IBM WATSONX GEOLOGICAL REPORT
