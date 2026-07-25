@@ -727,6 +727,10 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
 
 if st.button("📋 Generate Comprehensive Geological Synthesis Report",
              use_container_width=True, type="primary"):
+    # Warn if author info is empty
+    if not st.session_state.get("report_author", "").strip():
+        st.warning("⚠️ Por favor preencha o campo **Prepared by** antes de gerar o relatório.", icon="⚠️")
+        st.stop()
     with st.spinner("watsonx.ai a processar analise geologica completa..."):
         client = get_watsonx_client()
         meta = st.session_state["concession_metadata"]
@@ -743,11 +747,13 @@ if st.button("📋 Generate Comprehensive Geological Synthesis Report",
                 )
             target_summary = "\n".join(lines)
 
-        prompt = f"""[Role: Geologo Senior de Exploracao, Especialista em Metalogenia do Cinturao Moambicano (Pan-African Belt, 650-500 Ma)]
+        prompt = f"""Redija agora um PARECER TECNICO GEOLOGICO FORMAL e completo em Portugues, com base exclusivamente nos dados abaixo. NAO faca perguntas. NAO aguarde instrucoes. Escreva o parecer directamente.
 
-Voce esta a preparar um PARECER TECNICO FORMAL para uma concessao mineira em Mocambique.
+ESPECIALIDADE: Geologo Senior, Metalogenia do Cinturao Moambicano (Pan-African Belt, 650-500 Ma)
 
-=== DADOS DO CADASTRO MINEIRO ===
+CONCESSAO MINEIRA:
+
+DADOS DO CADASTRO MINEIRO:
 - Codigo: {meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))}
 - Nome: {meta.get('Nome da Concessao', meta.get('Nome da Concessão', ''))}
 - Titular: {meta.get('Titular (Holder Company)', '')}
@@ -757,7 +763,7 @@ Voce esta a preparar um PARECER TECNICO FORMAL para uma concessao mineira em Moc
 - Coordenadas: {st.session_state['map_center']}
 - Ano: {selected_year} | Commodity: {target_commodity}
 
-=== MATRIZ DE TELEMETRIA (5-WAY) ===
+MATRIZ DE TELEMETRIA (5-WAY):
 - Oxido de Ferro: {m_data.get('Way_1_Iron_Oxide_Gossan', 2.4)}
 - Argila/Hidroxilo: {m_data.get('Way_1_Clay_Phyllic', 1.9)}
 - Densidade de Falhas: {m_data.get('Way_2_Fault_Density_Index', 0.8)}
@@ -769,11 +775,11 @@ Voce esta a preparar um PARECER TECNICO FORMAL para uma concessao mineira em Moc
         if sat_data:
             prompt += f"""
 
-=== CROSTA PCA ===
+CROSTA PCA:
 - Iron Oxide PC{sat_data.get('crosta_iron_pc',0)+1}: mean={sat_data.get('crosta_iron_mean',0)}, anomaly={sat_data.get('crosta_iron_anomaly_pct',0)}%
 - Clay PC{sat_data.get('crosta_clay_pc',0)+1}: mean={sat_data.get('crosta_clay_mean',0)}, anomaly={sat_data.get('crosta_clay_anomaly_pct',0)}%
 
-=== ESTRUTURAL ===
+ANALISE ESTRUTURAL:
 - Densidade Lineamentos: {sat_data.get('lineament_density_val', 0)}
 - Interseccoes Alta Confianca: {sat_data.get('intersection_count', 0)}
 - Indice Densidade Interseccao: {sat_data.get('intersection_density_val', 0)}"""
@@ -784,30 +790,45 @@ Voce esta a preparar um PARECER TECNICO FORMAL para uma concessao mineira em Moc
             low_c  = sum(1 for t in targets if t["priority"] == "LOW")
             prompt += f"""
 
-=== ALVOS DE EXPLORACAO ===
+ALVOS DE EXPLORACAO:
 Total: {len(targets)} ({high_c} Alta, {med_c} Media, {low_c} Baixa prioridade)
 {target_summary}"""
 
         prompt += """
 
-=== ESTRUTURA OBRIGATORIA ===
-Escreva em PORTUGUES. Siga EXATAMENTE:
+INSTRUCOES DE REDACCAO:
+- Escreva directamente o parecer tecnico em Portugues. Nao inclua conversacao, confirmacoes ou frases de espera.
+- Use terminologia geologica tecnica e seja quantitativo.
+- Estruture OBRIGATORIAMENTE em 7 seccoes:
 
-**1. RESUMO EXECUTIVO** (2-3 paragrafos)
-**2. CONTEXTO GEOLOGICO REGIONAL** (Cinturao Pan-Africano, litologias, controles)
-**3. ANALISE DE ALTERACAO HIDROTERMAL** (Crosta PCA + band ratio Way 1)
-**4. ANALISE ESTRUTURAL** (lineamentos, interseccoes, orientacoes dominantes)
-**5. ALVOS DE EXPLORACAO** (tabela resumo + discutir alvos de ALTA prioridade)
-**6. RECOMENDACOES DE CAMPO** (amostragem, trincheiras, sondagens, cronograma)
-**7. PARECER FINAL: PERFURAR / NAO PERFURAR** (justificacao quantitativa)
+1. RESUMO EXECUTIVO
+Sintese dos dados telemetricos e prospectividade geral. Mencione a concessao e titulares.
 
-Use terminologia geologica tecnica. Seja especifico e quantitativo."""
+2. CONTEXTO GEOLOGICO REGIONAL
+Enquadramento no Cinturao Pan-Africano Mocambicano. Descricao litologica e controles estruturais regionais.
+
+3. ANALISE DE ALTERACAO HIDROTERMAL
+Interpretacao dos indices Way 1 (IO e Clay), Crosta PCA, e proxy de silicificacao. Classificacao da intensidade de alteracao.
+
+4. ANALISE ESTRUTURAL
+Interpretacao de lineamentos, interseccoes de alta confianca, e orientacoes dominantes. Papel no controle da mineralizacao.
+
+5. ALVOS DE EXPLORACAO PRIORIZADOS
+Tabela dos alvos de ALTA prioridade com localizacao, score, e justificacao geologica para cada um.
+
+6. RECOMENDACOES DE CAMPO (PROGRAMA DE TRABALHO)
+Fase 1: Prospeccao geoquimica (solo/rocha). Fase 2: Trincheiras. Fase 3: Sondagens. Cronograma e custos estimados.
+
+7. PARECER FINAL
+Veredicto claro: PERFURAR / NAO PERFURAR / RECLASSIFICAR. Justificacao quantitativa com base no WLC Score e indices telemetricos.
+
+INICIE JA A REDACCAO DO PARECER:"""
 
         model = ModelInference(
             model_id="meta-llama/llama-3-3-70b-instruct",
             credentials=credentials,
             project_id=PROJECT_ID,
-            params={"max_new_tokens": 3000, "temperature": 0.5}
+            params={"max_new_tokens": 4000, "temperature": 0.3}
         )
         report_text = model.generate_text(prompt=prompt)
         st.markdown(report_text)
