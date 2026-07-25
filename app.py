@@ -10,6 +10,8 @@ from fpdf import FPDF
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.patches import Polygon as MplPolygon
+from matplotlib.collections import PatchCollection
 import numpy as np
 
 
@@ -50,6 +52,53 @@ def get_watsonx_client():
     client = APIClient(credentials=credentials)
     client.set.default_project(PROJECT_ID)
     return client
+
+
+# ========================================================
+# HELPER: Draw concession polygon overlay on matplotlib axes
+# ========================================================
+BUFFER_DEG = 0.06  # must match buffer_deg in georemote.fetch_satellite_imagery
+
+def draw_polygon_on_ax(ax, polygon_geojson, map_center):
+    """
+    Overlay the concession polygon boundary on a matplotlib image axis.
+    Uses the same buffer_deg as the satellite fetch so coordinates align.
+    """
+    if not polygon_geojson:
+        return
+
+    try:
+        rings = polygon_geojson["geometry"]["coordinates"]
+        lat_c, lon_c = map_center
+        extent = [lon_c - BUFFER_DEG, lon_c + BUFFER_DEG, lat_c - BUFFER_DEG, lat_c + BUFFER_DEG]
+        ax.set_xlim(extent[0], extent[1])
+        ax.set_ylim(extent[2], extent[3])
+
+        for ring in rings:
+            # ring is a list of [lon, lat] pairs
+            poly_lons = [p[0] for p in ring]
+            poly_lats = [p[1] for p in ring]
+            # Close the ring
+            poly_lons.append(poly_lons[0])
+            poly_lats.append(poly_lats[0])
+
+            # Draw filled polygon (semi-transparent cyan)
+            patch = MplPolygon(
+                list(zip(poly_lons, poly_lats)),
+                closed=True,
+                facecolor="cyan",
+                alpha=0.15,
+                edgecolor="yellow",
+                linewidth=2.5,
+                zorder=5
+            )
+            ax.add_patch(patch)
+
+            # Draw the boundary line on top (bright yellow)
+            ax.plot(poly_lons, poly_lats, color="#FFD700", linewidth=2.5, zorder=6)
+    except Exception:
+        pass  # silently skip if polygon can't be drawn
+
 
 # ========================================================
 # 2. APPLICATION RUNTIME SESSION STATE
@@ -246,6 +295,7 @@ with col2:
 
 # ========================================================
 # 5b. SATELLITE IMAGERY & SPECTRAL INDEX VISUALIZATION
+#      WITH CONCESSION POLYGON OVERLAY
 # ========================================================
 sat_data = st.session_state.get("satellite_data")
 
@@ -254,15 +304,30 @@ if sat_data is not None:
     st.markdown("## 🛰️ Satellite Imagery & Spectral Index Maps")
     st.caption(f"Scene Date: {sat_data['scene_date']} | Cloud Cover: {sat_data['cloud_cover']}% | Source: {sat_data['Satellite_Used']}")
 
+    # Get polygon and map center for overlay
+    active_poly = st.session_state.get("active_polygon")
+    map_center = st.session_state["map_center"]
+
+    # Compute extent for georeferencing the images (matches buffer in georemote.py)
+    lat_c, lon_c = map_center
+    img_extent = [lon_c - BUFFER_DEG, lon_c + BUFFER_DEG, lat_c - BUFFER_DEG, lat_c + BUFFER_DEG]
+
+    has_polygon = active_poly is not None
+    if has_polygon:
+        st.success(f"📍 Concession polygon overlay active — boundary drawn on all images below.")
+
     # --- True Color & False Color Composites ---
     img_col1, img_col2 = st.columns(2)
 
     with img_col1:
         st.markdown("### 🌍 True Color Composite (RGB)")
         fig, ax = plt.subplots(figsize=(7, 6))
-        ax.imshow(sat_data["rgb"])
+        ax.imshow(sat_data["rgb"], extent=img_extent)
         ax.set_title("Natural Color — Landsat", fontsize=11, fontweight="bold")
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
@@ -270,9 +335,12 @@ if sat_data is not None:
         st.markdown("### 🔴 False Color (SWIR-NIR-Red)")
         st.caption("Mineral alteration enhancement — red/magenta tones indicate hydrothermal alteration zones")
         fig, ax = plt.subplots(figsize=(7, 6))
-        ax.imshow(sat_data["false_color"])
+        ax.imshow(sat_data["false_color"], extent=img_extent)
         ax.set_title("Mineral Enhancement Composite", fontsize=11, fontweight="bold")
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
@@ -286,9 +354,12 @@ if sat_data is not None:
         st.markdown("#### 🔶 Iron Oxide (Gossans) Index")
         st.caption("Red/Blue ratio — highlights ferric iron oxide zones")
         fig, ax = plt.subplots(figsize=(7, 6))
-        im = ax.imshow(sat_data["iron_oxide_map"], cmap="RdYlBu_r")
+        im = ax.imshow(sat_data["iron_oxide_map"], cmap="RdYlBu_r", extent=img_extent)
         ax.set_title("Iron Oxide Ratio (Band 4 / Band 2)", fontsize=10)
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Fe-Oxide Ratio", fontsize=9)
         st.pyplot(fig, use_container_width=True)
@@ -298,9 +369,12 @@ if sat_data is not None:
         st.markdown("#### 🟡 Clay/Hydroxyl Index")
         st.caption("SWIR1/SWIR2 ratio — highlights hydrothermal clay alteration")
         fig, ax = plt.subplots(figsize=(7, 6))
-        im = ax.imshow(sat_data["clay_map"], cmap="YlOrBr")
+        im = ax.imshow(sat_data["clay_map"], cmap="YlOrBr", extent=img_extent)
         ax.set_title("Clay Minerals Ratio (Band 6 / Band 7)", fontsize=10)
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Clay Ratio", fontsize=9)
         st.pyplot(fig, use_container_width=True)
@@ -312,9 +386,12 @@ if sat_data is not None:
         st.markdown("#### 🌿 NDVI — Vegetation Stress")
         st.caption("Negative values = bare rock/mineral exposure; positive = healthy vegetation")
         fig, ax = plt.subplots(figsize=(7, 6))
-        im = ax.imshow(sat_data["ndvi_map"], cmap="RdYlGn", vmin=-0.3, vmax=0.8)
+        im = ax.imshow(sat_data["ndvi_map"], cmap="RdYlGn", vmin=-0.3, vmax=0.8, extent=img_extent)
         ax.set_title("NDVI (Band 5 - Band 4) / (Band 5 + Band 4)", fontsize=10)
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("NDVI", fontsize=9)
         st.pyplot(fig, use_container_width=True)
@@ -324,16 +401,19 @@ if sat_data is not None:
         st.markdown("#### ⬜ Silica Proxy Index")
         st.caption("SWIR2/SWIR1 ratio — highlights silicified alteration zones")
         fig, ax = plt.subplots(figsize=(7, 6))
-        im = ax.imshow(sat_data["silica_map"], cmap="bone")
+        im = ax.imshow(sat_data["silica_map"], cmap="bone", extent=img_extent)
         ax.set_title("Silica Proxy (Band 7 / Band 6)", fontsize=10)
-        ax.axis("off")
+        if has_polygon:
+            draw_polygon_on_ax(ax, active_poly, map_center)
+        ax.set_xticks([])
+        ax.set_yticks([])
         cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Silica Ratio", fontsize=9)
         st.pyplot(fig, use_container_width=True)
         plt.close()
 
     st.markdown("---")
-    st.info("ℹ️ All spectral indices computed from real Landsat Collection 2 Level-2 surface reflectance data via Microsoft Planetary Computer. Higher values in Iron Oxide and Clay maps indicate stronger alteration signatures.")
+    st.info("ℹ️ All spectral indices computed from real Landsat Collection 2 Level-2 surface reflectance data via Microsoft Planetary Computer. Yellow polygon = concession boundary from INAMI cadastre. Higher values in Iron Oxide and Clay maps indicate stronger alteration signatures.")
 
 # ========================================================
 # 6. IBM WATSONX GEOLOGICAL REPORT GENERATION
