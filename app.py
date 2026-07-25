@@ -191,5 +191,15 @@ with col2:
 
             complete_prompt = p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
 
-            model = ModelInference(model_id="meta-llama/llama-3-3-70b-instruct", credentials=credentials, project_id=PROJECT_ID)
-            st.markdown(model.generate_text(prompt=complete_prompt))
+            model = ModelInference(
+                model_id="meta-llama/llama-3-3-70b-instruct",
+                credentials=credentials,
+                project_id=PROJECT_ID,
+                params={
+                    "max_new_tokens": 1500,
+                    "temperature": 0.7,
+                    "decoding_method": "greedy"
+                }
+            )
+            result = model.generate_text(prompt=complete_prompt)
+            st.markdown(result)
