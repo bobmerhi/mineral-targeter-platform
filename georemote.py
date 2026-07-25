@@ -572,16 +572,24 @@ def _get_asset_url(item, possible_keys):
 # SATELLITE IMAGERY FETCH (with progress callback)
 # ========================================================
 
-def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None):
+def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview_cb=None):
     """Fetch Landsat imagery and compute spectral indices.
     
     Args:
         progress_cb: Optional callback called at each stage with a status message string.
-                     e.g. progress_cb("Connecting to Microsoft Planetary Computer...")
+        preview_cb: Optional callback called with (title, image_array, colormap) at key stages
+                   to show live visual previews during processing.
     """
     def _cb(msg):
         if progress_cb:
             progress_cb(msg)
+
+    def _pv(title, img, cmap=None):
+        if preview_cb:
+            try:
+                preview_cb(title, img, cmap)
+            except Exception:
+                pass  # Never let preview errors crash the fetch
 
     if bbox is not None:
         fetch_bbox = bbox
@@ -653,9 +661,11 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None):
     _cb("Computing spectral indices: Iron Oxide (B4/B2)...")
     iron_oxide_map = np.divide(red,   blue  + 1e-6)
 
+    _pv("Iron Oxide Map (Red/Blue ratio)", iron_oxide_map, "RdYlBu_r")
     _cb("Computing spectral indices: Clay/Hydroxyl (B6/B7)...")
     clay_map       = np.divide(swir1, swir2 + 1e-6)
 
+    _pv("Clay/Hydroxyl Map (SWIR1/SWIR2 ratio)", clay_map, "YlOrBr")
     _cb("Computing spectral indices: NDVI & Silica proxy...")
     ndvi_map       = np.divide(nir - red, nir + red + 1e-6)
     silica_map     = np.divide(swir2, swir1 + 1e-6)
@@ -667,15 +677,19 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None):
     _cb("Running Crosta PCA: Iron Oxide component (Blue/Green/Red/NIR)...")
     crosta = _compute_crosta_pca(red, blue, green, nir, swir1, swir2)
 
+    _pv("Crosta PCA - Iron Oxide Component", crosta["iron_oxide_pca"], "RdBu_r")
     _cb("Running Crosta PCA: Clay/Hydroxyl component (NIR/SWIR1/SWIR2/Red)...")
     # PCA already computed above, just update label
+    _pv("Crosta PCA - Clay/Hydroxyl Component", crosta["clay_pca"], "RdBu_r")
     _cb("PCA complete. Extracting eigenvector loadings...")
 
     _cb("Detecting structural lineaments (N-S, E-W, NE-SW, NW-SE)...")
     lineaments = _extract_lineaments(swir1)
 
+    _pv("Lineament Density Map", lineaments["lineament_density_map"], "hot")
     _cb("Computing lineament intersection density map...")
     # Already computed in _extract_lineaments, just update label
+    _pv("Lineament Intersection Map", lineaments["intersection_map"], "inferno")
     _cb(f"Found {lineaments['intersection_count']} high-confidence intersections")
 
     # Compute WLC score
@@ -706,6 +720,9 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None):
 
     rgb         = np.dstack([to_uint8(red), to_uint8(green), to_uint8(blue)])
     false_color = np.dstack([to_uint8(swir1), to_uint8(nir), to_uint8(red)])
+
+    _pv("RGB Composite (Landsat True Color)", rgb)
+    _pv("False Color (SWIR1-NIR-Red)", false_color)
 
     iron_oxide_disp = np.clip(iron_oxide_map, np.nanpercentile(iron_oxide_map, 2), np.nanpercentile(iron_oxide_map, 98))
     clay_disp       = np.clip(clay_map,       np.nanpercentile(clay_map, 2),       np.nanpercentile(clay_map, 98))

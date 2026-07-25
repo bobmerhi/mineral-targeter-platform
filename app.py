@@ -176,10 +176,13 @@ search_method  = st.sidebar.radio("Select Landfolio Lookup Method", ["(a) Licens
 
 if search_method == "(a) License # Search":
     license_num = st.sidebar.text_input("Enter License Number", placeholder="e.g., 11521")
-    if license_num:
-        with st.sidebar.spinner("Buscando no Cadastro (INAMI)..."):
+    search_clicked = st.sidebar.button("Search License", type="primary", use_container_width=True)
+    if search_clicked and license_num:
+        with st.sidebar.status("Searching INAMI cadastre...", expanded=True) as cad_status:
+            st.write("  Connecting to Landfolio portal...")
             db_result = get_real_mozambique_cadastre(license_num)
             if db_result["found"]:
+                st.write(f"  Found: {db_result.get('metadata', {}).get('Nome da Concessao', license_num)}")
                 st.session_state["map_center"]         = [db_result["lat"], db_result["lon"]]
                 st.session_state["active_polygon"]      = db_result["polygon"]
                 st.session_state["concession_metadata"] = db_result["metadata"]
@@ -187,9 +190,10 @@ if search_method == "(a) License # Search":
                 st.session_state["m_data"]              = None
                 st.session_state["exploration_targets"]  = None
                 st.session_state["fetch_requested"]      = True
-                st.sidebar.success(f"Concessao {license_num} carregada!")
+                st.session_state["last_license"]         = license_num
+                cad_status.update(label=f"License {license_num} loaded!", state="complete", expanded=False)
             else:
-                st.sidebar.error(f"Licenca '{license_num}' nao encontrada.")
+                cad_status.update(label=f"License '{license_num}' not found", state="error")
 else:
     st.sidebar.info("Clique no mapa para selecionar coordenadas.")
 
@@ -285,7 +289,7 @@ with col2:
         placeholder_data = fetch_and_calculate_spatz(st.session_state["map_center"], None, selected_year)
         st.session_state["m_data"] = placeholder_data
 
-    # If fetch was requested, do the actual fetch with LIVE progress
+    # If fetch was requested, do the actual fetch with LIVE progress + visual previews
     if st.session_state.get("fetch_requested") and st.session_state.get("satellite_data") is None:
         st.session_state["fetch_requested"] = False
         with st.status("Fetching satellite data & computing spectral indices...", expanded=True) as status:
@@ -294,14 +298,30 @@ with col2:
                 active_poly = st.session_state.get("active_polygon")
                 poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
 
+                progress_log = st.container()
+
                 def progress_cb(msg):
-                    st.write(f"  {msg}")
+                    progress_log.write(f"  {msg}")
+
+                def preview_cb(title, img, cmap=None):
+                    """Show a live preview image during processing."""
+                    progress_log.write(f"  {title}")
+                    fig, ax = plt.subplots(figsize=(4, 3))
+                    if cmap:
+                        ax.imshow(img, cmap=cmap, aspect="auto")
+                    else:
+                        ax.imshow(img, aspect="auto")
+                    ax.set_title(title, fontsize=8)
+                    ax.axis("off")
+                    progress_log.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
 
                 sat_data = fetch_satellite_imagery(
-                    lat, lon, selected_year, bbox=poly_bbox, progress_cb=progress_cb
+                    lat, lon, selected_year, bbox=poly_bbox,
+                    progress_cb=progress_cb, preview_cb=preview_cb
                 )
 
-                st.write("  Generating exploration target zones...")
+                progress_log.write("  Generating exploration target zones...")
                 st.session_state["satellite_data"] = sat_data
                 st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":   sat_data["Way_1_Iron_Oxide_Gossan"],
@@ -313,10 +333,10 @@ with col2:
                     "Satellite_Used":             sat_data["Satellite_Used"],
                 }
                 st.session_state["exploration_targets"] = generate_exploration_targets(sat_data)
-                st.write("  Done! Loading results...")
+                progress_log.write("  Done! Loading results...")
                 status.update(label="Satellite analysis complete!", state="complete", expanded=False)
             except Exception as e:
-                st.write(f"  Error: {str(e)[:200]}")
+                progress_log.write(f"  Error: {str(e)[:200]}")
                 status.update(label="Satellite fetch failed - using predictive values", state="error")
                 st.session_state["m_data"] = fetch_and_calculate_spatz(st.session_state["map_center"], None, selected_year)
                 st.session_state["satellite_data"] = None
