@@ -19,7 +19,7 @@ except Exception:
 
 
 # ========================================================
-# IMAGE DEFINITIONS — name, key in sat_data, colormap, vmin, vmax
+# IMAGE SPECS
 # ========================================================
 IMAGE_SPECS = [
     ("01_True_Color_RGB",    "rgb",                  None,        None,    None),
@@ -40,23 +40,19 @@ IMAGE_SPECS = [
 # ========================================================
 
 def polygon_to_kml(polygon_geojson, metadata=None):
-    """Convert a GeoJSON polygon to a KML document string with metadata."""
     if not polygon_geojson:
         return None
-
     props = polygon_geojson.get("properties", {})
     name = props.get("name", "Concession")
     rings = polygon_geojson["geometry"]["coordinates"]
     outer_ring = rings[0]
     coord_str = " ".join(f"{lon},{lat},0" for lon, lat in outer_ring)
-
     desc_parts = []
     if metadata:
         for k, v in metadata.items():
             desc_parts.append(f"<b>{escape(str(k))}:</b> {escape(str(v))}")
     description = "<br/>".join(desc_parts) if desc_parts else name
     safe_name = escape(name)
-
     kml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
@@ -83,11 +79,10 @@ def polygon_to_kml(polygon_geojson, metadata=None):
 
 
 # ========================================================
-# ARRAY → PNG BYTES
+# ARRAY → PNG / GEOTIFF
 # ========================================================
 
 def _apply_colormap(array, cmap_name, vmin=None, vmax=None):
-    """Apply a matplotlib colormap to a 2D float array, return RGB uint8."""
     arr = array.copy().astype(float)
     if vmin is None:
         vmin = np.nanpercentile(arr, 2)
@@ -104,7 +99,6 @@ def _apply_colormap(array, cmap_name, vmin=None, vmax=None):
 
 
 def _array_to_png_bytes(array, cmap_name=None, vmin=None, vmax=None):
-    """Convert a numpy array (2D or 3D) to PNG bytes."""
     if array.ndim == 3:
         rgb = array.astype(np.uint8)
         if rgb.max() <= 1:
@@ -115,24 +109,16 @@ def _array_to_png_bytes(array, cmap_name=None, vmin=None, vmax=None):
         mn, mx = np.nanmin(array), np.nanmax(array)
         gray = np.clip((array - mn) / (mx - mn + 1e-10) * 255, 0, 255).astype(np.uint8)
         rgb = np.stack([gray, gray, gray], axis=2)
-
     img = Image.fromarray(rgb)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
 
-# ========================================================
-# ARRAY → GEOTIFF BYTES
-# ========================================================
-
 def _array_to_geotiff_bytes(array, fetch_bbox):
-    """Convert a numpy array to a GeoTIFF (EPSG:4326) as bytes."""
     if not HAS_RASTERIO:
         return None
-
     lon_min, lat_min, lon_max, lat_max = fetch_bbox
-
     if array.ndim == 2:
         h, w = array.shape
         count = 1
@@ -141,32 +127,194 @@ def _array_to_geotiff_bytes(array, fetch_bbox):
         h, w = array.shape[:2]
         count = array.shape[2]
         data = array.transpose(2, 0, 1).astype("float32")
-
     transform = rio_from_bounds(lon_min, lat_min, lon_max, lat_max, w, h)
-
     with MemoryFile() as memfile:
-        with memfile.open(
-            driver="GTiff", height=h, width=w, count=count,
-            dtype="float32", crs="EPSG:4326", transform=transform,
-        ) as dst:
+        with memfile.open(driver="GTiff", height=h, width=w, count=count,
+                          dtype="float32", crs="EPSG:4326", transform=transform) as dst:
             for i in range(count):
                 dst.write(data[i], i + 1)
         return memfile.read()
 
 
 # ========================================================
-# KML POLYGON FRAGMENT (for inclusion in master KML)
+# TARGETS KMZ (Professional Exploration Export)
+# ========================================================
+
+_STYLE_HIGH = (
+    '    <Style id="highPriority">\n'
+    '      <LineStyle><color>ff0000ff</color><width>2</width></LineStyle>\n'
+    '      <PolyStyle><color>400000ff</color></PolyStyle>\n'
+    '    </Style>'
+)
+_STYLE_MED = (
+    '    <Style id="mediumPriority">\n'
+    '      <LineStyle><color>ff00aaff</color><width>1.5</width></LineStyle>\n'
+    '      <PolyStyle><color>4000aaff</color></PolyStyle>\n'
+    '    </Style>'
+)
+_STYLE_LOW = (
+    '    <Style id="lowPriority">\n'
+    '      <LineStyle><color>ff00ffaa</color><width>1</width></LineStyle>\n'
+    '      <PolyStyle><color>4000ffaa</color></PolyStyle>\n'
+    '    </Style>'
+)
+_STYLE_BOUNDARY = (
+    '    <Style id="licenseBoundary">\n'
+    '      <LineStyle><color>ffffffff</color><width>2</width></LineStyle>\n'
+    '      <PolyStyle><color>00ffffff</color><fill>0</fill><outline>1</outline></PolyStyle>\n'
+    '    </Style>'
+)
+
+
+def _target_placemark(target):
+    """Generate a KML Placemark for a single exploration target."""
+    coord_str = " ".join(f"{lon},{lat},0" for lon, lat in target["polygon"])
+    style_map = {"HIGH": "highPriority", "MEDIUM": "mediumPriority", "LOW": "lowPriority"}
+    style_id = style_map.get(target["priority"], "lowPriority")
+    safe_id = escape(target["id"])
+
+    desc = (
+        f"<b>Target / Alvo:</b> {target['id']}<br/>"
+        f"<b>Composite Score / Pontuacao Composta:</b> {target['score']}<br/>"
+        f"<b>Priority / Prioridade:</b> {target['priority']}<br/>"
+        f"<b>Structural Control / Controle Estrutural:</b> {escape(target['structural_control'])}<br/>"
+        f"<b>Lithology / Litologia:</b> {escape(target['lithology'])}<br/>"
+        f"<b>Radius / Raio:</b> ~{target['radius_m']} m<br/>"
+        f"<b>Coordinates:</b> {target['lat']:.6f}, {target['lon']:.6f}<br/>"
+        f"<b>IO Score:</b> {target['io_score']} | <b>Clay Score:</b> {target['clay_score']} | "
+        f"<b>Structural:</b> {target['struct_score']} | <b>Geomorphology:</b> {target['geomorph_score']} | "
+        f"<b>Lineament:</b> {target['line_score']}<br/>"
+        f"<b>Description / Descricao:</b> {escape(target['description_en'])}<br/>"
+        f"<b>Descricao PT:</b> {escape(target['description_pt'])}"
+    )
+
+    return (
+        '    <Placemark>\n'
+        f'      <name>{safe_id} (Score: {target["score"]})</name>\n'
+        f'      <description><![CDATA[{desc}]]></description>\n'
+        f'      <styleUrl>#{style_id}</styleUrl>\n'
+        '      <Polygon><tessellate>1</tessellate>\n'
+        '        <outerBoundaryIs><LinearRing><tessellate>1</tessellate>\n'
+        f'          <coordinates>{coord_str}</coordinates>\n'
+        '        </LinearRing></outerBoundaryIs>\n'
+        '      </Polygon>\n'
+        '    </Placemark>'
+    )
+
+
+def _boundary_placemark(polygon_geojson, metadata=None):
+    """Generate a KML Placemark for the license boundary polygon."""
+    props = polygon_geojson.get("properties", {})
+    name = props.get("name", "License Boundary")
+    rings = polygon_geojson["geometry"]["coordinates"]
+    outer_ring = rings[0]
+    coord_str = " ".join(f"{lon},{lat},0" for lon, lat in outer_ring)
+    safe_name = escape(name)
+
+    area_str = ""
+    if metadata and "Area / Dimensao" in metadata:
+        area_str = metadata["Area / Dimensao"]
+    elif metadata and "\xc1rea / Dimens\xc3o" in metadata:
+        area_str = metadata["\xc1rea / Dimens\xc3o"]
+
+    return (
+        '    <Placemark>\n'
+        f'      <name>{safe_name}</name>\n'
+        f'      <description>{escape(area_str)} concession area</description>\n'
+        '      <styleUrl>#licenseBoundary</styleUrl>\n'
+        '      <Polygon><tessellate>1</tessellate>\n'
+        '        <outerBoundaryIs><LinearRing><tessellate>1</tessellate>\n'
+        f'          <coordinates>{coord_str}</coordinates>\n'
+        '        </LinearRing></outerBoundaryIs>\n'
+        '      </Polygon>\n'
+        '    </Placemark>'
+    )
+
+
+def create_targets_kmz(targets, polygon_geojson=None, metadata=None, sat_data=None):
+    """
+    Create a professional exploration targets KMZ file matching the reference format:
+    - Folders: License Boundary, High/Medium/Low Priority Targets
+    - Color-coded polygons with bilingual descriptions
+    - Composite scores, structural controls, lithology
+    """
+    fetch_bbox = sat_data.get("fetch_bbox") if sat_data else None
+    scene_date = sat_data.get("scene_date", "") if sat_data else ""
+    satellite = sat_data.get("Satellite_Used", "") if sat_data else ""
+
+    # Group targets by priority
+    high = [t for t in targets if t["priority"] == "HIGH"]
+    medium = [t for t in targets if t["priority"] == "MEDIUM"]
+    low = [t for t in targets if t["priority"] == "LOW"]
+
+    # Build license boundary folder
+    boundary_folder = ""
+    if polygon_geojson:
+        boundary_folder = (
+            '  <Folder>\n'
+            '    <name>License Boundary / Limite da Licenca</name>\n'
+            + _boundary_placemark(polygon_geojson, metadata) + '\n'
+            '  </Folder>'
+        )
+
+    def build_priority_folder(name, target_list):
+        if not target_list:
+            return ""
+        placemarks = "\n".join(_target_placemark(t) for t in target_list)
+        return (
+            f'  <Folder>\n'
+            f'    <name>{name}</name>\n'
+            f'{placemarks}\n'
+            f'  </Folder>'
+        )
+
+    high_folder = build_priority_folder("High Priority Targets / Alvos de Alta Prioridade", high)
+    med_folder = build_priority_folder("Medium Priority Targets / Alvos de Media Prioridade", medium)
+    low_folder = build_priority_folder("Low Priority Targets / Alvos de Baixa Prioridade", low)
+
+    # Assemble
+    folders = "\n".join(f for f in [boundary_folder, high_folder, med_folder, low_folder] if f)
+
+    # Description with scoring protocol
+    desc_text = (
+        f"Satellite-derived target zones. Composite score: "
+        f"IO(0.20) + CLAY(0.20) + Structural(0.15) + Geomorphology(0.30) + Lineament(0.15). "
+        f"Scene: {scene_date}. Source: {satellite}."
+    )
+
+    kml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
+        '<Document>\n'
+        f'  <name>SatIntel Exploration Targets</name>\n'
+        f'  <description>{escape(desc_text)}</description>\n'
+        f'{_STYLE_HIGH}\n'
+        f'{_STYLE_MED}\n'
+        f'{_STYLE_LOW}\n'
+        f'{_STYLE_BOUNDARY}\n'
+        f'{folders}\n'
+        '</Document>\n'
+        '</kml>'
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("doc.kml", kml)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ========================================================
+# IMAGE OVERLAY KMZ (Google Earth — polygon + all image overlays)
 # ========================================================
 
 def _kml_polygon_fragment(polygon_geojson, metadata=None):
-    """Generate a KML Placemark fragment for the polygon."""
     props = polygon_geojson.get("properties", {})
     name = props.get("name", "Concession")
     rings = polygon_geojson["geometry"]["coordinates"]
     outer_ring = rings[0]
     coord_str = " ".join(f"{lon},{lat},0" for lon, lat in outer_ring)
     safe_name = escape(name)
-
     return (
         '    <Style id="concessionStyle">\n'
         '      <LineStyle><color>ff00d7ff</color><width>4</width></LineStyle>\n'
@@ -184,12 +332,7 @@ def _kml_polygon_fragment(polygon_geojson, metadata=None):
     )
 
 
-# ========================================================
-# KMZ BUNDLE (Google Earth — polygon + all image overlays)
-# ========================================================
-
 def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=None):
-    """Create a KMZ file containing the polygon + all images as GroundOverlays."""
     if fetch_bbox is None:
         fetch_bbox = sat_data.get("fetch_bbox")
     if fetch_bbox is None:
@@ -203,12 +346,9 @@ def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         master_parts = []
-
-        # Polygon placemark
         if polygon_geojson:
             master_parts.append(_kml_polygon_fragment(polygon_geojson, metadata))
 
-        # Image GroundOverlays
         for img_name, key, cmap, vmin, vmax in IMAGE_SPECS:
             if key not in sat_data:
                 continue
@@ -233,7 +373,6 @@ def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=
             )
             master_parts.append(frag)
 
-        # Assemble master KML
         overlays_xml = "\n".join(master_parts)
         master_kml = (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -252,11 +391,10 @@ def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=
 
 
 # ========================================================
-# GEOTIFF BUNDLE (QGIS / ArcGIS — georeferenced rasters)
+# GEOTIFF BUNDLE
 # ========================================================
 
 def create_geotiff_bundle(sat_data, fetch_bbox=None):
-    """Create a ZIP file containing all images as GeoTIFF (EPSG:4326)."""
     if fetch_bbox is None:
         fetch_bbox = sat_data.get("fetch_bbox")
     if fetch_bbox is None or not HAS_RASTERIO:
@@ -271,17 +409,15 @@ def create_geotiff_bundle(sat_data, fetch_bbox=None):
             geotiff_bytes = _array_to_geotiff_bytes(arr, fetch_bbox)
             if geotiff_bytes:
                 zf.writestr(f"{img_name}.tif", geotiff_bytes)
-
     buf.seek(0)
     return buf.getvalue()
 
 
 # ========================================================
-# PNG BUNDLE (reports / presentations)
+# PNG BUNDLE
 # ========================================================
 
 def create_png_bundle(sat_data):
-    """Create a ZIP file containing all images as high-res PNGs."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for img_name, key, cmap, vmin, vmax in IMAGE_SPECS:
@@ -290,6 +426,5 @@ def create_png_bundle(sat_data):
             arr = sat_data[key]
             png_bytes = _array_to_png_bytes(arr, cmap_name=cmap, vmin=vmin, vmax=vmax)
             zf.writestr(f"{img_name}.png", png_bytes)
-
     buf.seek(0)
     return buf.getvalue()
