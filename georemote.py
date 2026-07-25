@@ -751,6 +751,37 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
 
     _cb("Satellite imagery processing complete!")
 
+    # ── Normalise all rasters to a single common shape ──────────────────
+    # Lineament maps come out 2px smaller (sliding_window_view trims edges).
+    # Crop everything to the minimum shared H×W so overlays never mismatch.
+    all_2d = [rgb[:,:,0], false_color[:,:,0],
+              iron_oxide_disp, clay_disp, ndvi_disp, silica_disp, fault_density_map,
+              crosta["iron_oxide_pca"], crosta["clay_pca"],
+              lineaments["lineament_density_map"], lineaments["intersection_map"],
+              lineaments["ns_map"], lineaments["ew_map"],
+              lineaments["nesw_map"], lineaments["nwse_map"]]
+    ch = min(a.shape[0] for a in all_2d)
+    cw = min(a.shape[1] for a in all_2d)
+
+    def _c2(a):   return a[:ch, :cw]
+    def _c3(a):   return a[:ch, :cw, :]
+
+    rgb            = _c3(rgb)
+    false_color    = _c3(false_color)
+    iron_oxide_disp = _c2(iron_oxide_disp)
+    clay_disp       = _c2(clay_disp)
+    ndvi_disp       = _c2(ndvi_disp)
+    silica_disp     = _c2(silica_disp)
+    fault_density_map = _c2(fault_density_map)
+    # Crosta PCA
+    crosta["iron_oxide_pca"] = _c2(crosta["iron_oxide_pca"])
+    crosta["clay_pca"]       = _c2(crosta["clay_pca"])
+    # Lineament maps
+    for _k in ["lineament_density_map","intersection_map",
+               "ns_map","ew_map","nesw_map","nwse_map"]:
+        lineaments[_k] = _c2(lineaments[_k])
+    # ────────────────────────────────────────────────────────────────────
+
     return {
         "rgb":              rgb,
         "false_color":      false_color,
