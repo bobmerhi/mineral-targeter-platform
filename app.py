@@ -176,3 +176,123 @@ with col2:
             
             model = ModelInference(model_id="meta-llama/llama-3-3-70b-instruct", credentials=credentials, project_id=PROJECT_ID)
             st.markdown(model.generate_text(prompt=complete_prompt))
+import streamlit as st
+from fpdf import FPDF
+from ibm_watsonx_ai.foundation_models import Model
+
+# 1. SETUP THE SYSTEM PROMPT FOR LLAMA 3.3
+def generate_technical_report(area_ha, data_apresentacao, data_emissao, data_validade, tipo_direito, substancias):
+    """Calls watsonx.ai Llama-3-3-70b to generate a structured Portuguese Technical Report."""
+    
+    # Define a clean prompt structuring environmental context variables
+    system_instruction = (
+        "Você é um engenheiro de minas sênior e consultor especialista em regulação mineral em Moçambique. "
+        "Sua tarefa é gerar um Parecer Técnico institucional detalhado, formal e rigoroso sobre uma concessão mineira. "
+        "O documento deve ser escrito em português formal, utilizando terminologia jurídica e geológica precisa."
+    )
+    
+    user_input = f"""
+    Gere um Parecer Técnico estruturado com as seguintes seções claras:
+    1. INTRODUÇÃO E ENQUADRAMENTO LEGAL (Análise do direito de exploração)
+    2. SUMÁRIO DA ÁREA E DIMENSÕES (Avaliação dos {area_ha} Hectares)
+    3. CRONOGRAMA DE VALIDADE E PRAZOS (Análise das datas de apresentação, emissão e expiração)
+    4. POTENCIAL GEOLÓGICO E SUBSTÂNCIAS (Análise detalhada das substâncias identificadas: {substancias})
+    5. CONCLUSÃO E RECOMENDAÇÕES TÉCNICAS
+
+    Dados da Concessão:
+    - Área / Dimensão: {area_ha} Hectares (Ha)
+    - Data de Apresentação: {data_apresentacao}
+    - Data de Emissão (Concessão): {data_emissao}
+    - Data de Validade (Expiry): {data_validade}
+    - Tipo de Direito / Estado: {tipo_direito}
+    - Substâncias Categoria: {substancias}
+    """
+    
+    # Formatting prompt format structure matching Llama 3.3 chat template architecture
+    full_prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_instruction}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{user_input}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    
+    # Configure production-ready model execution limits
+    model_id = "meta-llama/llama-3-3-70b-instruct"
+    parameters = {
+        "decoding_method": "sample",
+        "max_new_tokens": 1200,
+        "temperature": 0.3,
+        "top_p": 1
+    }
+    
+    # Establish engine handshake
+    model = Model(
+        model_id=model_id,
+        params=parameters,
+        credentials=st.secrets["credentials"], # Refers to your stored Streamlit cloud dict
+        project_id=st.secrets["PROJECT_ID"]
+    )
+    
+    response = model.generate_text(prompt=full_prompt)
+    return response
+
+
+# 2. PDF ENGINE DEFINITION USING FPDF
+class TechnicalReportPDF(FPDF):
+    def header(self):
+        # Professional Institutional Header
+        self.set_font('Helvetica', 'B', 12)
+        self.set_text_color(40, 40, 40)
+        self.cell(0, 10, 'SATINTEL - GEOLOGICAL & MINING INSIGHTS', 0, 1, 'L')
+        self.set_draw_color(200, 200, 200)
+        self.line(10, 20, 200, 20)
+        self.ln(10)
+        
+    def footer(self):
+        # Footer displaying automatic page indexing
+        self.set_y(-15)
+        self.set_font('Helvetica', 'I', 8)
+        self.set_text_color(128, 128, 128)
+        self.cell(0, 10, f'Página {self.page_no()}/{{nb}} - Gerado Automaticamente via SatIntel API', 0, 0, 'C')
+
+def convert_text_to_pdf(report_content):
+    """Compiles the dynamic LLM text response directly into an exportable PDF byte array."""
+    pdf = TechnicalReportPDF()
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=10)
+    
+    # Clean text payload string tracking to safeguard against compilation encoding errors
+    safe_text = report_content.encode('latin-1', 'replace').decode('latin-1')
+    
+    # Render layout paragraphs dynamically across document lines
+    pdf.multi_cell(0, 6, safe_text)
+    return pdf.output(dest='S') # Stream directly out as raw string bytes
+
+
+# 3. STREAMLIT FRONTEND INJECTION
+# Extract active metadata parameters directly from your visual table variables
+area_val = "18,876.81"
+data_ap = "02/05/2023"
+data_em = "18/06/2025"
+data_val = "18/06/2050"
+direito_tipo = "Concessão Mineira - Em Vigor"
+subst_list = "Ouro, Lítio, Esmeralda, Turmalina, Tantalite, Berilo, Espodumena, Lepidolite, Mica, Morganite"
+
+if st.button("🚀 Generate 5-Way Geological Synthesis"):
+    with st.spinner("Analisando dados geológicos com Llama 3.3..."):
+        # Fire model request wrapper function
+        generated_report = generate_technical_report(area_val, data_ap, data_em, data_val, direito_tipo, subst_list)
+        
+        # Cache text inside temporary local execution space
+        st.session_state["report_txt"] = generated_report
+        
+if "report_txt" in st.session_state:
+    st.markdown("### Parecer Técnico")
+    st.write(st.session_state["report_txt"])
+    
+    # Generate the file structure for deployment
+    pdf_bytes = convert_text_to_pdf(st.session_state["report_txt"])
+    
+    # Inject the physical UI layout action button to trigger file saving
+    st.download_button(
+        label="📥 Download Parecer Técnico (PDF)",
+        data=pdf_bytes,
+        file_name="Parecer_Tecnico_SatIntel.pdf",
+        mime="application/pdf"
+    )
