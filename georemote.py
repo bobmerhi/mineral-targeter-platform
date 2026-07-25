@@ -1,15 +1,14 @@
-import pystac_client
-import planetary_computer
-import requests
+"""
+SatIntel GeRemote — Satellite Imagery, Cadastre API, PCA, Lineaments, Target Generation
+All heavy imports (pystac, rasterio, scipy, requests) are lazy-loaded inside functions
+to ensure the module always imports successfully on Streamlit Cloud.
+"""
 import numpy as np
-import rasterio
-from rasterio.windows import from_bounds
-from rasterio.warp import transform_bounds
 import re
 import math
 
 # ========================================================
-# LANDFOLIO / INAMI ARCGIS API CONFIGURATION
+# CONFIGURATION
 # ========================================================
 LANDFOLIO_PORTAL_URL = "https://portals.landfolio.com/mozambique/en/"
 ARCGIS_BASE = "https://licenses.inami.gov.mz/arcgis/rest/services/MapPortal"
@@ -19,11 +18,34 @@ POLYGON_PADDING_DEG = 0.02
 
 
 # ========================================================
+# LAZY IMPORT HELPERS
+# ========================================================
+
+def _get_requests():
+    import requests as _r
+    return _r
+
+
+def _get_rasterio():
+    import rasterio
+    from rasterio.windows import from_bounds
+    from rasterio.warp import transform_bounds
+    return rasterio, from_bounds, transform_bounds
+
+
+def _get_stac():
+    import pystac_client
+    import planetary_computer
+    return pystac_client, planetary_computer
+
+
+# ========================================================
 # INAMI / LANDFOLIO CADASTRE API
 # ========================================================
 
 def _get_arcgis_token():
     try:
+        requests = _get_requests()
         resp = requests.get(LANDFOLIO_PORTAL_URL, timeout=15, verify=False)
         tokens = re.findall(r'ArcGISToken\\":\\"([^"\\]+)\\"', resp.text)
         if tokens:
@@ -34,6 +56,7 @@ def _get_arcgis_token():
 
 
 def _query_arcgis_layer(token, layer_id, license_code):
+    requests = _get_requests()
     url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/{layer_id}/query"
     params = {
         "f": "json", "token": token,
@@ -124,7 +147,7 @@ def _build_result(feature, clean_id):
             "Nome da Concessão": str(attrs.get("Name", "Não Especificado")),
             "Titular (Holder Company)": str(attrs.get("Parties", "Não Disponível")),
             "Área / Dimensão": f"{attrs.get('AreaValue', 0):,.2f} {attrs.get('AreaUnit', 'Ha')}",
-            "Tipo de Direito": str(attrs.get("TypeGroup", "N/A")),
+            "Tipo de Direito / Estado": str(attrs.get("TypeGroup", "N/A")),
             "Tipo de Licença": str(attrs.get("Type", "N/A")),
             "Estado (Status)": str(attrs.get("Status", "N/A")),
             "Jurisdição": str(attrs.get("Jurisdic", "N/A")),
@@ -159,7 +182,7 @@ def _hardcoded_11521():
             "Nome da Concessão": "Tete Platinum, Limitada (100%)",
             "Titular (Holder Company)": "Tete Platinum, Limitada",
             "Área / Dimensão": "18,876.81 Hectares (Ha)",
-            "Tipo de Direito": "Exploração",
+            "Tipo de Direito / Estado": "Exploração",
             "Tipo de Licença": "N/A",
             "Estado (Status)": "Em Vigor",
             "Jurisdição": "N/A",
@@ -167,7 +190,7 @@ def _hardcoded_11521():
             "Data de Candidatura": "N/A",
             "Data de Emissão": "18/06/2025",
             "Data de Validade (Expiry)": "18/06/2050",
-            "Substâncias": "Água-Marinha, Berilo, Esmeralda, Espodumena, Lepidolite, Lítio, Mica, Morganite, Ouro, Tantalite, Turmalina"
+            "Substâncias": "Água-Marinha, Berilo, Esmeralda, Espodumena, Lepidolite, Litio, Mica, Morganite, Ouro, Tantalite, Turmalina"
         }
     }
 
@@ -227,7 +250,40 @@ def _compute_crosta_pca(red, blue, green, nir, swir1, swir2):
 # ========================================================
 
 def _extract_lineaments(swir1):
-    from scipy.ndimage import sobel, gaussian_filter
+    try:
+        from scipy.ndimage import sobel, gaussian_filter
+    except ImportError:
+        # Fallback without scipy — simple gradient
+        sx = np.gradient(swir1.astype(np.float64), axis=1)
+        sy = np.gradient(swir1.astype(np.float64), axis=0)
+        grad_ns = np.abs(sx)
+        grad_ew = np.abs(sy)
+        grad_nesw = np.abs(sx + sy) / np.sqrt(2)
+        grad_nwse = np.abs(sx - sy) / np.sqrt(2)
+
+        def to_binary(g, p=85):
+            t = np.nanpercentile(g, p)
+            return (g > t).astype(float)
+
+        ns = to_binary(grad_ns)
+        ew = to_binary(grad_ew)
+        nesw = to_binary(grad_nesw)
+        nwse = to_binary(grad_nwse)
+        density = ns + ew + nesw + nwse
+        inter = (ns * ew + nesw * nwse + ns * nesw + ew * nwse + ns * nwse + ew * nesw)
+        if inter.max() > 0:
+            inter_norm = inter / inter.max()
+        else:
+            inter_norm = inter
+        return {
+            "lineament_density_map": density,
+            "intersection_map": inter_norm,
+            "ns_map": ns, "ew_map": ew, "nesw_map": nesw, "nwse_map": nwse,
+            "lineament_density_val": round(float(np.nanmean(density)) / 4.0, 3),
+            "intersection_count": int(np.sum(inter_norm > np.nanpercentile(inter_norm, 90)) if inter_norm.max() > 0 else 0),
+            "intersection_density_val": round(float(np.nanmean(inter_norm)), 3),
+        }
+
     h, w = swir1.shape
     img = gaussian_filter(swir1.astype(np.float64), sigma=1.0)
     sx = sobel(img, axis=1)
@@ -269,7 +325,6 @@ def _extract_lineaments(swir1):
 # ========================================================
 
 def _create_buffer_polygon(center_lon, center_lat, radius_m, n_points=32):
-    """Create a circular polygon around a center point in lat/lon."""
     coords = []
     for i in range(n_points):
         angle = 2 * math.pi * i / n_points
@@ -311,33 +366,31 @@ def _generate_target_desc_pt(score, orientations, lithology, io_score, clay_scor
     if score >= 0.65:
         parts.append("Alvo de sondagem de alta prioridade.")
     elif score >= 0.45:
-        parts.append("Alvo de exploração de média prioridade.")
+        parts.append("Alvo de exploracao de media prioridade.")
     else:
         parts.append("Alvo de baixa prioridade.")
 
     if len(orientations) >= 3:
-        parts.append("Interseção estrutural tripla com forte potencial de via de fluido.")
+        parts.append("Intersecao estrutural tripla com forte potencial de via de fluido.")
     elif len(orientations) == 2:
-        parts.append("Zona de interseção estrutural com foco moderado de fluido.")
+        parts.append("Zona de intersecao estrutural com foco moderado de fluido.")
 
     if io_score > 0.6 and clay_score > 0.5:
-        parts.append("Forte anomalia co-localizada de óxido de ferro e argila.")
+        parts.append("Forte anomalia co-localizada de oxido de ferro e argila.")
     elif io_score > 0.5:
-        parts.append("Assinatura proeminente de óxido de ferro (gossan).")
+        parts.append("Assinatura proeminente de oxido de ferro (gossan).")
     elif clay_score > 0.5:
-        parts.append("Forte halo de alteração argila/hidroxilo.")
+        parts.append("Forte halo de alteracao argila/hidroxilo.")
 
     return " ".join(parts)
 
 
 def generate_exploration_targets(sat_data, max_targets=12):
-    """
-    Generate gold exploration target zones from satellite data using a composite
-    scoring model: IO(0.20) + CLAY(0.20) + Structural(0.15) + Geomorphology(0.30) + Lineament(0.15).
-    Returns a list of target dicts with scores, priority, lithology, structural control,
-    bilingual descriptions, and buffer polygons.
-    """
-    from scipy.ndimage import label, center_of_mass, gaussian_filter
+    """Generate gold exploration target zones from satellite data."""
+    try:
+        from scipy.ndimage import label, center_of_mass, gaussian_filter
+    except ImportError:
+        return _generate_exploration_targets_fallback(sat_data, max_targets)
 
     intersection = sat_data["intersection_map"]
     iron_pca = sat_data["crosta_iron_pca"]
@@ -359,12 +412,10 @@ def generate_exploration_targets(sat_data, max_targets=12):
     line_norm = norm01(lineament_density)
     geomorph_norm = norm01(fault_density)
 
-    # Composite score map
     composite = (0.20 * iron_norm + 0.20 * clay_norm + 0.15 * inter_norm +
                  0.30 * geomorph_norm + 0.15 * line_norm)
     composite_smooth = gaussian_filter(np.nan_to_num(composite), sigma=3.0)
 
-    # Find peaks above threshold
     threshold = np.nanpercentile(composite_smooth, 85)
     binary = (composite_smooth > threshold).astype(int)
     labeled, num_features = label(binary)
@@ -393,21 +444,16 @@ def generate_exploration_targets(sat_data, max_targets=12):
         target_lon = lon_min + (cx / w) * (lon_max - lon_min)
         target_lat = lat_max - (cy / h) * (lat_max - lat_min)
 
-        # Determine structural control from orientation maps
         ns_val = float(np.nanmean(sat_data["lineament_ns_map"][y0:y1, x0:x1]))
         ew_val = float(np.nanmean(sat_data["lineament_ew_map"][y0:y1, x0:x1]))
         nesw_val = float(np.nanmean(sat_data["lineament_nesw_map"][y0:y1, x0:x1]))
         nwse_val = float(np.nanmean(sat_data["lineament_nwse_map"][y0:y1, x0:x1]))
 
         orientations = []
-        if ns_val > 0.1:
-            orientations.append("N/S")
-        if ew_val > 0.1:
-            orientations.append("E/W")
-        if nesw_val > 0.1:
-            orientations.append("NE/SW")
-        if nwse_val > 0.1:
-            orientations.append("NW/SE")
+        if ns_val > 0.1: orientations.append("N/S")
+        if ew_val > 0.1: orientations.append("E/W")
+        if nesw_val > 0.1: orientations.append("NE/SW")
+        if nwse_val > 0.1: orientations.append("NW/SE")
 
         if len(orientations) >= 3:
             struct_control = " + ".join(orientations) + " intersection"
@@ -418,7 +464,6 @@ def generate_exploration_targets(sat_data, max_targets=12):
         else:
             struct_control = "Undefined structural control"
 
-        # Infer lithology from spectral signature
         if io_score > 0.5 and clay_score > 0.4:
             lithology = "Amphibolite Gneiss"
         elif io_score > 0.4 and clay_score < 0.3:
@@ -428,7 +473,6 @@ def generate_exploration_targets(sat_data, max_targets=12):
         else:
             lithology = "Amphibolite Gneiss"
 
-        # Priority classification
         if total >= 0.65:
             priority = "HIGH"
         elif total >= 0.45:
@@ -463,11 +507,102 @@ def generate_exploration_targets(sat_data, max_targets=12):
         })
 
     targets.sort(key=lambda x: x["score"], reverse=True)
-
     for i, t in enumerate(targets):
         t["id"] = f"T-{i+1:02d}"
 
     return targets[:max_targets]
+
+
+def _generate_exploration_targets_fallback(sat_data, max_targets=12):
+    """Fallback target generation without scipy — uses numpy only."""
+    intersection = sat_data["intersection_map"]
+    iron_pca = sat_data["crosta_iron_pca"]
+    clay_pca = sat_data["crosta_clay_pca"]
+    lineament_density = sat_data["lineament_density_map"]
+    fault_density = sat_data["fault_density_map"]
+    fetch_bbox = sat_data["fetch_bbox"]
+
+    h, w = intersection.shape
+    lon_min, lat_min, lon_max, lat_max = fetch_bbox
+
+    def norm01(arr):
+        mn, mx = np.nanmin(arr), np.nanmax(arr)
+        return (arr - mn) / (mx - mn + 1e-10)
+
+    iron_norm = norm01(iron_pca)
+    clay_norm = norm01(clay_pca)
+    inter_norm = np.clip(intersection, 0, 1)
+    line_norm = norm01(lineament_density)
+    geomorph_norm = norm01(fault_density)
+
+    composite = (0.20 * iron_norm + 0.20 * clay_norm + 0.15 * inter_norm +
+                 0.30 * geomorph_norm + 0.15 * line_norm)
+
+    # Simple peak detection without scipy
+    threshold = np.nanpercentile(composite, 90)
+    # Find points above threshold, evenly sampled
+    flat = composite.ravel()
+    above = np.where(flat > threshold)[0]
+    if len(above) == 0:
+        return []
+
+    # Sample up to max_targets points, spread across the image
+    step = max(1, len(above) // max_targets)
+    selected = above[::step][:max_targets]
+
+    targets = []
+    for i, idx in enumerate(selected):
+        cy, cx = divmod(idx, w)
+        r = 10
+        y0, y1 = max(0, cy - r), min(h, cy + r)
+        x0, x1 = max(0, cx - r), min(w, cx + r)
+
+        io_score = float(np.nanmean(iron_norm[y0:y1, x0:x1]))
+        clay_score = float(np.nanmean(clay_norm[y0:y1, x0:x1]))
+        struct_score = float(np.nanmean(inter_norm[y0:y1, x0:x1]))
+        geomorph_score = float(np.nanmean(geomorph_norm[y0:y1, x0:x1]))
+        line_score = float(np.nanmean(line_norm[y0:y1, x0:x1]))
+
+        total = (0.20 * io_score + 0.20 * clay_score + 0.15 * struct_score +
+                 0.30 * geomorph_score + 0.15 * line_score)
+
+        target_lon = lon_min + (cx / w) * (lon_max - lon_min)
+        target_lat = lat_max - (cy / h) * (lat_max - lat_min)
+
+        if total >= 0.65: priority = "HIGH"
+        elif total >= 0.45: priority = "MEDIUM"
+        else: priority = "LOW"
+
+        radius_m = int(150 + total * 250)
+        polygon_coords = _create_buffer_polygon(target_lon, target_lat, radius_m)
+
+        orientations = ["N/S", "E/W"]
+        struct_control = "N/S + E/W intersection"
+        lithology = "Amphibolite Gneiss"
+
+        targets.append({
+            "id": f"T-{i+1:02d}",
+            "score": round(total, 2),
+            "priority": priority,
+            "structural_control": struct_control,
+            "lithology": lithology,
+            "radius_m": radius_m,
+            "lat": round(target_lat, 6),
+            "lon": round(target_lon, 6),
+            "description_en": _generate_target_desc_en(total, orientations, lithology, io_score, clay_score),
+            "description_pt": _generate_target_desc_pt(total, orientations, lithology, io_score, clay_score),
+            "polygon": polygon_coords,
+            "io_score": round(io_score, 2),
+            "clay_score": round(clay_score, 2),
+            "struct_score": round(struct_score, 2),
+            "geomorph_score": round(geomorph_score, 2),
+            "line_score": round(line_score, 2),
+        })
+
+    targets.sort(key=lambda x: x["score"], reverse=True)
+    for i, t in enumerate(targets):
+        t["id"] = f"T-{i+1:02d}"
+    return targets
 
 
 # ========================================================
@@ -479,6 +614,7 @@ def _scale_reflectance(band):
 
 
 def _read_band_window(url, bbox_4326):
+    rasterio, from_bounds, transform_bounds = _get_rasterio()
     with rasterio.open(url) as src:
         left, bottom, right, top = transform_bounds(
             "EPSG:4326", src.crs,
@@ -518,6 +654,7 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None):
         buf = DEFAULT_BUFFER_DEG
         fetch_bbox = [lon - buf, lat - buf, lon + buf, lat + buf]
 
+    pystac_client, planetary_computer = _get_stac()
     stac = pystac_client.Client.open(
         "https://planetarycomputer.microsoft.com/api/stac/v1",
         modifier=planetary_computer.sign_inplace,

@@ -713,13 +713,13 @@ Use terminologia geológica técnica apropriada. Seja específico e quantitativo
             # Title
             pdf.set_font('Helvetica', 'B', 16)
             pdf.set_text_color(0, 77, 64)
-            pdf.multi_cell(0, 10, f'PARECER TECNICO - {meta.get("Nome da Concessao", "Concessao")}')
+            pdf.multi_cell(0, 10, f'PARECER TECNICO - {meta.get("Nome da Concessão", "Concessão")}')
             pdf.ln(5)
 
             # Metadata box
             pdf.set_font('Helvetica', 'B', 10)
             pdf.set_text_color(0, 0, 0)
-            pdf.cell(0, 6, f'Licenca: {meta.get("Codigo da Licenca (Code)", "N/A")}', 0, 1)
+            pdf.cell(0, 6, f'Licenca: {meta.get("ódigo da Licença (Code)", "N/A")}', 0, 1)
             pdf.cell(0, 6, f'Titular: {meta.get("Titular (Holder Company)", "N/A")}', 0, 1)
             pdf.cell(0, 6, f'Data: {selected_year} | Satelite: {m_data.get("Satellite_Used", "N/A")}', 0, 1)
             pdf.ln(5)
@@ -734,7 +734,7 @@ Use terminologia geológica técnica apropriada. Seja específico e quantitativo
             st.download_button(
                 label="📥 Download Report as PDF",
                 data=pdf_bytes,
-                file_name=f"parecer_tecnico_{meta.get('Codigo da Licenca (Code)', 'concessao')}_{selected_year}.pdf",
+                file_name=f"parecer_tecnico_{meta.get('Código da Licença (Code)', 'concessao')}_{selected_year}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
             )
