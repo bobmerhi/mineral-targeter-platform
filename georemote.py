@@ -1,3 +1,4 @@
+# SatIntel - redeploy trigger
 """
 SatIntel GeRemote — Satellite Imagery, Cadastre API, PCA, Lineaments, Target Generation
 All heavy imports (pystac, rasterio, scipy, requests) are lazy-loaded inside functions
