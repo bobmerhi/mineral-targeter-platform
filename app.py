@@ -334,7 +334,7 @@ with col2:
                 log.markdown("\n".join(f"✅ {s}" for s in steps))
 
                 st.session_state["satellite_data"]      = result
-                st.session_state["exploration_targets"] = generate_exploration_targets(result)
+                st.session_state["exploration_targets"] = generate_exploration_targets(result, polygon_geojson=st.session_state.get("active_polygon"))
                 st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
                     "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
@@ -392,17 +392,57 @@ if sat_data is not None:
     active_poly = st.session_state.get("active_polygon")
     fetch_bbox  = sat_data.get("fetch_bbox")
 
+    def _polygon_pixel_mask(fetch_bbox, img_shape):
+        """Build a boolean mask: True inside the concession polygon."""
+        if not active_poly or fetch_bbox is None:
+            return None
+        try:
+            from matplotlib.path import Path
+            lon_min, lat_min, lon_max, lat_max = fetch_bbox
+            h, w = img_shape[:2]
+            ys, xs = np.mgrid[:h, :w]
+            grid = np.column_stack([xs.ravel(), ys.ravel()])
+            mask = np.zeros(h * w, dtype=bool)
+            for ring in active_poly["geometry"]["coordinates"]:
+                verts = []
+                for p in ring:
+                    px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                    py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                    verts.append((px, py))
+                path = Path(verts)
+                mask |= path.contains_points(grid)
+            return mask.reshape(h, w)
+        except Exception:
+            return None
+
     def make_fig(img_array, cmap=None, vmin=None, vmax=None, title="", label="", show_targets=False):
         fig, ax = plt.subplots(figsize=(7, 6))
+        # ── Clip image to polygon boundaries ──────────────────────────
+        if active_poly and fetch_bbox:
+            mask = _polygon_pixel_mask(fetch_bbox, img_array.shape)
+            if mask is not None:
+                if img_array.ndim == 3:
+                    masked = img_array.copy()
+                    masked[~mask] = 0  # black outside polygon
+                    display = masked
+                else:
+                    masked = img_array.copy()
+                    masked[~mask] = np.nan
+                    display = masked
+            else:
+                display = img_array
+        else:
+            display = img_array
+
         kw = {}
         if vmin is not None: kw["vmin"] = vmin
         if vmax is not None: kw["vmax"] = vmax
         if cmap:
-            im = ax.imshow(img_array, cmap=cmap, **kw)
+            im = ax.imshow(display, cmap=cmap, **kw)
             cb = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
             cb.set_label(label, fontsize=9)
         else:
-            ax.imshow(img_array, **kw)
+            ax.imshow(display, **kw)
         ax.set_title(title, fontsize=10, fontweight="bold")
         if active_poly and fetch_bbox:
             draw_polygon_on_ax(ax, active_poly, fetch_bbox, img_array.shape)

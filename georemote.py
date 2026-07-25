@@ -339,17 +339,93 @@ def _extract_lineaments(swir1):
 # EXPLORATION TARGET GENERATION
 # ========================================================
 
-def generate_exploration_targets(sat_data, max_targets=12):
+def _polygon_to_pixel_mask(polygon_geojson, fetch_bbox, shape):
+    """Create a boolean mask: True inside the polygon, False outside."""
+    if not polygon_geojson or fetch_bbox is None:
+        return None
+    try:
+        from matplotlib.path import Path
+        lon_min, lat_min, lon_max, lat_max = fetch_bbox
+        h, w = shape[:2]
+        rings = polygon_geojson["geometry"]["coordinates"]
+        all_points = []
+        for ring in rings:
+            for p in ring:
+                px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                all_points.append((px, py))
+        # Create grid
+        ys, xs = np.mgrid[:h, :w]
+        grid = np.column_stack([xs.ravel(), ys.ravel()])
+        mask = np.zeros(h * w, dtype=bool)
+        for ring in rings:
+            verts = [(p[0], p[1]) for p in ring]  # already in pixel coords
+            # Reconvert
+            verts_px = []
+            for p in ring:
+                px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                verts_px.append((px, py))
+            path = Path(verts_px)
+            mask |= path.contains_points(grid)
+        mask = mask.reshape(h, w)
+        return mask
+    except Exception:
+        return None
+
+
+def _infer_lithology(io_val, clay_val, silica_val, ndvi_val, struct_val, line_int_val):
+    """Infer lithology from spectral signatures + structural data."""
+    # Granite Gneiss: high silica, moderate iron, moderate clay
+    if silica_val > 0.6 and io_val > 1.2 and clay_val > 1.0:
+        if struct_val > 0.5:
+            return "Granite Gneiss contact zone"
+        return "Granite Gneiss"
+    # Amphibolite: very high iron, low silica
+    if io_val > 2.0 and silica_val < 0.5:
+        return "Amphibolite Gneiss with quartz veining"
+    # Ferruginous / BIF
+    if io_val > 2.5:
+        return "Ferruginous Quartzite / BIF horizon"
+    # Hydrothermally altered
+    if clay_val > 2.0 and io_val > 1.0:
+        return "Hydrothermally altered Granite Gneiss"
+    # Mafic / greenstone
+    if io_val > 1.5 and ndvi_val < 0.3:
+        return "Mafic metavolcanic / greenstone"
+    # Low anomaly — undifferentiated
+    return "Undifferentiated metamorphic basement"
+
+
+def _infer_structural_control(orientations):
+    """Infer structural control from orientation strengths."""
+    sorted_oris = sorted(orientations.items(), key=lambda x: x[1], reverse=True)
+    top1_name, top1_val = sorted_oris[0]
+    top2_name, top2_val = sorted_oris[1]
+    # If top 2 orientations are close, it's an intersection
+    if top2_val > top1_val * 0.7:
+        return f"{top1_name} + {top2_name} intersection"
+    return f"{top1_name} lineament intersection zone"
+
+
+def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None):
     try:
         from scipy.ndimage import label as nd_label, center_of_mass
-        from scipy.ndimage import maximum_filter
+        from scipy.ndimage import gaussian_filter
     except ImportError:
         nd_label = None
         center_of_mass = None
-        maximum_filter = None
+        gaussian_filter = None
 
-    wlc_map = np.zeros_like(sat_data["iron_oxide_map"], dtype=np.float64)
-    h, w = wlc_map.shape
+    h, w = sat_data["iron_oxide_map"].shape
+    fetch_bbox = sat_data["fetch_bbox"]
+
+    # ── Build polygon mask for constraining targets ─────────────────
+    poly_mask = None
+    if polygon_geojson and fetch_bbox:
+        poly_mask = _polygon_to_pixel_mask(polygon_geojson, fetch_bbox, (h, w))
+    if poly_mask is None:
+        poly_mask = np.ones((h, w), dtype=bool)
 
     def norm_01(arr):
         mn, mx = np.nanmin(arr), np.nanmax(arr)
@@ -360,6 +436,8 @@ def generate_exploration_targets(sat_data, max_targets=12):
     struct   = norm_01(sat_data.get("lineament_density_map", np.zeros((h, w))))
     geomorph = norm_01(sat_data["false_color"][:, :, 0].astype(np.float64))
     line_int = norm_01(sat_data.get("intersection_map", np.zeros((h, w))))
+    silica_raw = sat_data.get("silica_map", np.zeros((h, w)))
+    ndvi_raw = sat_data.get("ndvi_map", np.zeros((h, w)))
 
     composite = (
         0.20 * io_norm +
@@ -369,22 +447,32 @@ def generate_exploration_targets(sat_data, max_targets=12):
         0.15 * line_int
     )
 
-    composite_smooth = composite.copy()
-    try:
-        from scipy.ndimage import gaussian_filter
-        composite_smooth = gaussian_filter(composite, sigma=2)
-    except ImportError:
-        pass
+    # ── Mask: zero composite OUTSIDE the polygon ───────────────────
+    composite_masked = composite.copy()
+    composite_masked[~poly_mask] = -999  # mark as invalid outside polygon
 
-    threshold_high = np.nanpercentile(composite_smooth, 92)
-    threshold_med  = np.nanpercentile(composite_smooth, 80)
+    if gaussian_filter:
+        composite_smooth = gaussian_filter(np.where(composite_masked > -998, composite_masked, 0), sigma=2)
+        composite_smooth[~poly_mask] = -999  # re-mask after smoothing
+    else:
+        composite_smooth = composite_masked
+
+    # Only consider pixels INSIDE the polygon
+    inside_vals = composite_smooth[poly_mask]
+    if len(inside_vals) == 0:
+        return _fallback_targets(sat_data, composite_smooth, max_targets, polygon_geojson)
+
+    threshold_high = np.nanpercentile(inside_vals, 90)
+    threshold_med  = np.nanpercentile(inside_vals, 75)
 
     if nd_label is not None and center_of_mass is not None:
-        binary = composite_smooth > threshold_med
+        # Binary: only inside polygon AND above threshold
+        binary = (composite_smooth > threshold_med) & poly_mask
         labeled, num_features = nd_label(binary)
         if num_features == 0:
-            return _fallback_targets(sat_data, composite_smooth, max_targets)
+            return _fallback_targets(sat_data, composite_smooth, max_targets, polygon_geojson)
 
+        # Score each cluster
         scores_per_cluster = {}
         for label_id in range(1, num_features + 1):
             mask = labeled == label_id
@@ -392,7 +480,6 @@ def generate_exploration_targets(sat_data, max_targets=12):
             scores_per_cluster[label_id] = score
 
         top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:max_targets]
-        fetch_bbox = sat_data["fetch_bbox"]
         lon_min, lat_min, lon_max, lat_max = fetch_bbox
 
         targets = []
@@ -416,26 +503,23 @@ def generate_exploration_targets(sat_data, max_targets=12):
             struct_s  = round(float(np.nanmean(struct[cluster_mask])), 3)
             geom_s    = round(float(np.nanmean(geomorph[cluster_mask])), 3)
             line_s    = round(float(np.nanmean(line_int[cluster_mask])), 3)
+            silica_s  = round(float(np.nanmean(norm_01(silica_raw)[cluster_mask])), 3)
+            ndvi_s    = round(float(np.nanmean(ndvi_raw[cluster_mask])), 3)
 
             orientations = {
-                "N-S": float(np.nanmean(sat_data.get("lineament_ns_map", np.zeros((h, w)))[cluster_mask])),
-                "E-W": float(np.nanmean(sat_data.get("lineament_ew_map", np.zeros((h, w)))[cluster_mask])),
-                "NE-SW": float(np.nanmean(sat_data.get("lineament_nesw_map", np.zeros((h, w)))[cluster_mask])),
-                "NW-SE": float(np.nanmean(sat_data.get("lineament_nwse_map", np.zeros((h, w)))[cluster_mask])),
+                "N/S": float(np.nanmean(sat_data.get("lineament_ns_map", np.zeros((h, w)))[cluster_mask])),
+                "E/W": float(np.nanmean(sat_data.get("lineament_ew_map", np.zeros((h, w)))[cluster_mask])),
+                "NE/SW": float(np.nanmean(sat_data.get("lineament_nesw_map", np.zeros((h, w)))[cluster_mask])),
+                "NW/SE": float(np.nanmean(sat_data.get("lineament_nwse_map", np.zeros((h, w)))[cluster_mask])),
             }
-            dominant_orient = max(orientations, key=orientations.get)
-            structural_control = f"{dominant_orient} lineament intersection zone"
+            structural_control = _infer_structural_control(orientations)
 
+            # ── Improved lithology inference from spectral signatures ──
             io_val = sat_data["Way_1_Iron_Oxide_Gossan"]
             clay_val = sat_data["Way_1_Clay_Phyllic"]
-            if io_val > 1.5 and clay_val > 1.5:
-                lithology = "Amphibolite Gneiss with quartz veining"
-            elif io_val > 1.5:
-                lithology = "Ferruginous Pan-African Granitoid"
-            elif clay_val > 1.5:
-                lithology = "Hydrothermally altered Granite Gneiss"
-            else:
-                lithology = "Undifferentiated metamorphic basement"
+            silica_val = float(np.nanmean(silica_raw[cluster_mask]))
+            ndvi_val = float(np.nanmean(ndvi_raw[cluster_mask]))
+            lithology = _infer_lithology(io_val, clay_val, silica_val, ndvi_val, struct_s, line_s)
 
             radius_m = max(50, min(500, int(np.sqrt(cluster_size)) * 30))
 
@@ -450,34 +534,46 @@ def generate_exploration_targets(sat_data, max_targets=12):
             ]
 
             score_pct = round(score * 100, 1)
-            desc_en = f"Target zone with composite score {score_pct}%. Iron oxide anomaly {io_score}, clay alteration {clay_s}. Structural control via {structural_control}. Lithology: {lithology}."
-            desc_pt = f"Zona alvo com score composto {score_pct}%. Anomalia de oxido de ferro {io_score}, alteracao argilosa {clay_s}. Controle estrutural via {structural_control}. Litologia: {lithology}."
+            desc_en = (
+                f"Target zone with composite score {score_pct}%. "
+                f"Iron oxide anomaly {io_score}, clay alteration {clay_s}. "
+                f"Structural control via {structural_control}. "
+                f"Lithology: {lithology}."
+            )
+            desc_pt = (
+                f"Zona alvo com score composto {score_pct}%. "
+                f"Anomalia de oxido de ferro {io_score}, alteracao argilosa {clay_s}. "
+                f"Controle estrutural via {structural_control}. "
+                f"Litologia: {lithology}."
+            )
 
             targets.append({
-                "id": f"TGT-{len(targets)+1:03d}",
+                "id": f"T-{len(targets)+1:02d}",
                 "score": score_pct,
                 "priority": priority,
                 "structural_control": structural_control,
                 "lithology": lithology,
                 "radius_m": radius_m,
-                "lat": lat,
-                "lon": lon,
+                "lat": round(lat, 6),
+                "lon": round(lon, 6),
                 "polygon": ring,
                 "io_score": io_score,
                 "clay_score": clay_s,
                 "struct_score": struct_s,
                 "geomorph_score": geom_s,
                 "line_score": line_s,
+                "silica_score": silica_s,
+                "ndvi_score": ndvi_s,
                 "description_en": desc_en,
                 "description_pt": desc_pt,
             })
 
         return targets
     else:
-        return _fallback_targets(sat_data, composite_smooth, max_targets)
+        return _fallback_targets(sat_data, composite_smooth, max_targets, polygon_geojson)
 
 
-def _fallback_targets(sat_data, composite, max_targets):
+def _fallback_targets(sat_data, composite, max_targets, polygon_geojson=None):
     h, w = composite.shape
     fetch_bbox = sat_data["fetch_bbox"]
     lon_min, lat_min, lon_max, lat_max = fetch_bbox
