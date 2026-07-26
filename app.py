@@ -9,26 +9,51 @@ st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide"
 
 import folium
 from streamlit_folium import st_folium
-from ibm_watsonx_ai import APIClient
-from ibm_watsonx_ai.foundation_models import ModelInference
-from georemote import (
-    fetch_and_calculate_spatz,
-    get_real_mozambique_cadastre,
-    search_cadastre_by_name,
-    fetch_satellite_imagery,
-    fetch_sentinel2_lithology,
-    fetch_aster_tir_indices,
-    polygon_to_bbox,
-    generate_exploration_targets,
-)
-from export_utils import (
-    polygon_to_kml,
-    create_kmz_bundle,
-    create_geotiff_bundle,
-    create_png_bundle,
-    create_targets_kmz,
-)
-from pdf_report import generate_professional_report
+try:
+    from ibm_watsonx_ai import APIClient
+    from ibm_watsonx_ai.foundation_models import ModelInference
+except Exception as _ibm_err:
+    import traceback as _tb
+    st.error(f"Failed to import ibm_watsonx_ai: {type(_ibm_err).__name__}: {_ibm_err}")
+    st.code(_tb.format_exc())
+    st.stop()
+try:
+    from georemote import (
+        fetch_and_calculate_spatz,
+        get_real_mozambique_cadastre,
+        search_cadastre_by_name,
+        fetch_satellite_imagery,
+        fetch_sentinel2_lithology,
+        fetch_aster_tir_indices,
+        polygon_to_bbox,
+        generate_exploration_targets,
+    )
+except Exception as _georemote_err:
+    import traceback as _tb
+    st.error(f"Failed to import georemote: {type(_georemote_err).__name__}: {_georemote_err}")
+    st.code(_tb.format_exc())
+    st.stop()
+try:
+    from export_utils import (
+        polygon_to_kml,
+        create_kmz_bundle,
+        create_geotiff_bundle,
+        create_png_bundle,
+        create_targets_kmz,
+    )
+except Exception as _export_err:
+    import traceback as _tb
+    st.error(f"Failed to import export_utils: {type(_export_err).__name__}: {_export_err}")
+    st.code(_tb.format_exc())
+    st.stop()
+
+try:
+    from pdf_report import generate_professional_report
+except Exception as _pdf_err:
+    import traceback as _tb
+    st.error(f"Failed to import pdf_report: {type(_pdf_err).__name__}: {_pdf_err}")
+    st.code(_tb.format_exc())
+    st.stop()
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
