@@ -14,6 +14,7 @@ from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import (
     fetch_and_calculate_spatz,
     get_real_mozambique_cadastre,
+    search_cadastre_by_name,
     fetch_satellite_imagery,
     polygon_to_bbox,
     generate_exploration_targets,
@@ -123,6 +124,8 @@ DEFAULTS = {
     "exploration_targets": None,
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
+    "name_search_results": None,
+    "name_search_term": "",
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -156,7 +159,7 @@ selected_basemap = st.sidebar.selectbox(
 selected_year = st.sidebar.slider("Select Analysis Year", 1990, 2026, 2024)
 search_method = st.sidebar.radio(
     "Select Landfolio Lookup Method",
-    ["(a) License # Search", "(b) Coordinates + Radius", "(c) Map Selection"]
+    ["(a) License # Search", "(b) License Name Search", "(c) Coordinates + Radius", "(d) Map Selection"]
 )
 
 if search_method == "(a) License # Search":
@@ -188,7 +191,81 @@ if search_method == "(a) License # Search":
                 cad_status.update(label=f"License {license_num} loaded!", state="complete", expanded=False)
             else:
                 cad_status.update(label=f"License '{license_num}' not found", state="error")
-elif search_method == "(b) Coordinates + Radius":
+elif search_method == "(b) License Name Search":
+    name_input = st.sidebar.text_input(
+        "Enter License Name or Holder",
+        value=st.session_state.get("name_search_term", ""),
+        placeholder="e.g., Tete Platinum, EXXON, or Ouro",
+        help="Search by concession name or holder company. Multiple results may appear."
+    )
+    name_search_clicked = st.sidebar.button("Search by Name", type="primary", use_container_width=True)
+
+    if name_search_clicked and name_input.strip():
+        with st.sidebar.status("Searching INAMI cadastre by name...", expanded=True) as name_status:
+            st.write("Querying Landfolio portal...")
+            results = search_cadastre_by_name(name_input.strip())
+            if results:
+                st.session_state["name_search_results"] = results
+                st.session_state["name_search_term"] = name_input.strip()
+                name_status.update(label=f"Found {len(results)} matching license(s)", state="complete", expanded=False)
+            else:
+                st.session_state["name_search_results"] = None
+                name_status.update(label=f"No licenses found for '{name_input.strip()}'", state="error")
+
+    # Show search results for selection
+    if st.session_state.get("name_search_results"):
+        results = st.session_state["name_search_results"]
+        st.sidebar.markdown(f"**{len(results)} license(s) found** \u2014 select one:")
+
+        labels = []
+        for r in results:
+            holder_short = r['holder'][:30] if r['holder'] != 'N/A' else 'N/A'
+            labels.append(f"{r['code']} \u2014 {r['name']} ({holder_short})")
+
+        selected_idx = st.sidebar.selectbox(
+            "Select License",
+            range(len(results)),
+            format_func=lambda i: labels[i],
+            key="name_search_select"
+        )
+
+        if selected_idx is not None:
+            r = results[selected_idx]
+            with st.sidebar.container():
+                st.markdown(f"""
+                **{r['name']}**
+                - Code: {r['code']} | Status: {r['status']}
+                - Holder: {r['holder']}
+                - Area: {r['area']}
+                - Commodities: {r['commodities']}
+                - Expiry: {r['expiry']}
+                """)
+
+            if st.sidebar.button("Load Selected License", type="primary", use_container_width=True):
+                with st.sidebar.status("Loading license...", expanded=True) as load_status:
+                    st.write(f"Fetching {r['code']} from cadastre...")
+                    db_result = get_real_mozambique_cadastre(r["code"])
+                    if db_result["found"]:
+                        name = db_result.get("metadata", {}).get("Nome da Concessao", r["code"])
+                        st.write(f"Found: {name}")
+                        st.session_state["map_center"]         = [db_result["lat"], db_result["lon"]]
+                        st.session_state["active_polygon"]      = db_result["polygon"]
+                        st.session_state["concession_metadata"] = db_result["metadata"]
+                        st.session_state["satellite_data"]      = None
+                        st.session_state["exploration_targets"] = None
+                        st.session_state["last_license"]        = r["code"]
+                        st.session_state["m_data"] = fetch_and_calculate_spatz(
+                            [db_result["lat"], db_result["lon"]], None, selected_year
+                        )
+                        st.session_state["m_data"]["_is_predictive"] = True
+                        load_status.update(label=f"License {r['code']} loaded!", state="complete", expanded=False)
+                    else:
+                        load_status.update(label=f"Failed to load license {r['code']}", state="error")
+
+    elif st.session_state.get("name_search_term"):
+        st.sidebar.info(f"No results for '{st.session_state['name_search_term']}'. Try a different name.")
+
+elif search_method == "(c) Coordinates + Radius":
     st.sidebar.markdown("Paste coordinates (e.g. `-15.5451, 34.1422`)")
     coord_paste = st.sidebar.text_input(
         "Lat, Lon",

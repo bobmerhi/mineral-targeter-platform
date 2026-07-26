@@ -1025,3 +1025,59 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
         "Way_5_WLC_Score_Percent": wlc,
         "Satellite_Used": f"Predictive Model (Landsat-Operational-MZ-{year})",
     }
+
+
+# ========================================================
+# NAME-BASED CADASTRE SEARCH
+# ========================================================
+
+def search_cadastre_by_name(search_term):
+    """
+    Search INAMI cadastre by license name or holder name.
+    Returns a list of matching concessions with summary info.
+    """
+    requests = _get_requests()
+    token = _get_arcgis_token()
+    if not token:
+        return []
+
+    search_term = search_term.strip()
+    # Escape single quotes for ArcGIS query
+    safe_term = search_term.replace("'", "''")
+    where_clause = f"(Name LIKE '%{safe_term}%' OR Parties LIKE '%{safe_term}%')"
+
+    results = []
+    seen_codes = set()
+
+    for layer_id in MINING_LAYERS:
+        try:
+            url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/{layer_id}/query"
+            params = {
+                "f": "json", "token": token,
+                "where": where_clause,
+                "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,AreaValue,AreaUnit,Commodities,DteExpires",
+                "returnGeometry": "false",
+                "outSR": "4326",
+            }
+            resp = requests.get(url, params=params, timeout=20, verify=False)
+            features = resp.json().get("features", [])
+            for feat in features:
+                attrs = feat.get("attributes", {})
+                code = str(attrs.get("Code", ""))
+                if code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                results.append({
+                    "code": code,
+                    "name": str(attrs.get("Name", "N/A")),
+                    "holder": str(attrs.get("Parties", "N/A")),
+                    "status": str(attrs.get("Status", "N/A")),
+                    "type": str(attrs.get("Type", "N/A")),
+                    "area": f"{attrs.get('AreaValue', 0):,.2f} {attrs.get('AreaUnit', 'Ha')}",
+                    "commodities": str(attrs.get("Commodities", "N/A")),
+                    "expiry": _arcgis_date_to_str(attrs.get("DteExpires")),
+                })
+        except Exception:
+            continue
+
+    return results
