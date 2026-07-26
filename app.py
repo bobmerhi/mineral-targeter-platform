@@ -756,7 +756,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     with rc1:
         report_author = st.text_input(
             "Prepared by (Nome do Responsavel)*",
-            value=st.session_state.get("report_author", ""),
+            value=st.session_state.get("report_author", "Mr. Issufo Vali"),
             placeholder="e.g., Eng. Yasser Abu baker",
             key="form_author"
         )
