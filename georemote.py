@@ -170,6 +170,8 @@ def _query_arcgis_layer(token, layer_id, license_code):
         "where": f"Code = '{license_code}'",
         "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,Jurisdic,Region,DteApplied,DteGranted,DteExpires,AreaValue,AreaUnit,Commodities",
         "returnGeometry": "true", "outSR": "4326",
+        "resultRecordCount": 10,
+        "resultOffset": 0,
     }
     resp = requests.get(url, params=params, timeout=15, verify=False)
     return resp.json().get("features", [])
@@ -1024,4 +1026,414 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
         "Way_4_Geobotanical_Stress": ndvi_val,
         "Way_5_WLC_Score_Percent": wlc,
         "Satellite_Used": f"Predictive Model (Landsat-Operational-MZ-{year})",
+    }
+
+
+# ========================================================
+# NAME-BASED CADASTRE SEARCH
+# ========================================================
+
+def search_cadastre_by_name(search_term):
+    """
+    Search INAMI cadastre by license name or holder name.
+    Returns a list of matching concessions with summary info.
+    """
+    requests = _get_requests()
+    token = _get_arcgis_token()
+    if not token:
+        return []
+
+    search_term = search_term.strip()
+    # Escape single quotes for ArcGIS query
+    safe_term = search_term.replace("'", "''")
+    where_clause = f"(Name LIKE '%{safe_term}%' OR Parties LIKE '%{safe_term}%')"
+
+    results = []
+    seen_codes = set()
+
+    for layer_id in MINING_LAYERS:
+        try:
+            url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/{layer_id}/query"
+            params = {
+                "f": "json", "token": token,
+                "where": where_clause,
+                "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,AreaValue,AreaUnit,Commodities,DteExpires",
+                "returnGeometry": "false",
+                "outSR": "4326",
+                "resultRecordCount": 50,
+                "resultOffset": 0,
+            }
+            resp = requests.get(url, params=params, timeout=20, verify=False)
+            features = resp.json().get("features", [])
+            for feat in features:
+                attrs = feat.get("attributes", {})
+                code = str(attrs.get("Code", ""))
+                if code in seen_codes:
+                    continue
+                seen_codes.add(code)
+                results.append({
+                    "code": code,
+                    "name": str(attrs.get("Name", "N/A")),
+                    "holder": str(attrs.get("Parties", "N/A")),
+                    "status": str(attrs.get("Status", "N/A")),
+                    "type": str(attrs.get("Type", "N/A")),
+                    "area": f"{attrs.get('AreaValue', 0):,.2f} {attrs.get('AreaUnit', 'Ha')}",
+                    "commodities": str(attrs.get("Commodities", "N/A")),
+                    "expiry": _arcgis_date_to_str(attrs.get("DteExpires")),
+                })
+        except Exception:
+            continue
+
+    return results
+
+
+# ========================================================
+# HOST ROCK LITHOLOGY MODULE (2024-2026 Methods)
+# ========================================================
+
+def _search_sentinel2_earth_search(bbox, year, cloud_limit=10, max_items=10):
+    """Search for Sentinel-2 scenes via Earth Search (AWS STAC)."""
+    requests = _get_requests()
+    start = f"{year}-01-01T00:00:00Z"
+    end = f"{year}-12-31T23:59:59Z"
+    payload = {
+        "collections": ["sentinel-2-l2a"],
+        "intersects": {
+            "type": "Polygon",
+            "coordinates": [[
+                [bbox[0], bbox[1]], [bbox[2], bbox[1]],
+                [bbox[2], bbox[3]], [bbox[0], bbox[3]],
+                [bbox[0], bbox[1]]
+            ]]
+        },
+        "datetime": f"{start}/{end}",
+        "query": {"eo:cloud_cover": {"lt": cloud_limit}},
+        "limit": max_items,
+        "sortby": [{"field": "properties.eo:cloud_cover", "direction": "asc"}],
+    }
+    resp = requests.post(EARTH_SEARCH_URL, json=payload, timeout=20)
+    return resp.json().get("features", [])
+
+
+def fetch_sentinel2_lithology(lat, lon, year, bbox=None, progress_cb=None, preview_cb=None):
+    """
+    Fetch Sentinel-2 imagery and compute host rock lithology indices:
+    - AGDI (Amphibolite-Gneiss Discriminator Index) — 2025
+    - FSI (Ferrous Silicate Index) — maps mafic rocks
+    - FEI (Ferrous Iron Index) — 2024, calibrated for mafic dykes
+    - NDGI (Graphite Index) — 2024, maps graphitic schists
+    - Clay/Felsic Index — B11/B12
+    - Iron Oxide Index — B4/B2
+    
+    Returns dict with lithology maps and classification.
+    """
+    def _cb(msg):
+        if progress_cb:
+            progress_cb(msg)
+
+    def _pv(title, img, cmap=None):
+        if preview_cb:
+            try:
+                preview_cb(title, img, cmap)
+            except Exception:
+                pass
+
+    if bbox is not None:
+        fetch_bbox = bbox
+    else:
+        buf = DEFAULT_BUFFER_DEG
+        fetch_bbox = [lon - buf, lat - buf, lon + buf, lat + buf]
+
+    _cb("Searching Sentinel-2 scenes via Earth Search (AWS STAC)...")
+    features = _search_sentinel2_earth_search(fetch_bbox, year, cloud_limit=10, max_items=10)
+
+    if not features:
+        _cb("No low-cloud S2 scenes, expanding search...")
+        features = _search_sentinel2_earth_search(fetch_bbox, year, cloud_limit=30, max_items=10)
+
+    if not features:
+        _cb("No Sentinel-2 scenes found. Skipping lithology module.")
+        return None
+
+    best = min(features, key=lambda f: f["properties"].get("eo:cloud_cover", 100))
+    cloud = best["properties"].get("eo:cloud_cover", 0)
+    scene_date = best["properties"].get("datetime", "")
+    _cb(f"Best S2 scene: {scene_date[:10]} (cloud: {cloud:.1f}%)")
+
+    _cb("Getting Azure Blob Storage SAS token...")
+    sas_token = _get_pc_sas_token()
+    if not sas_token:
+        raise RuntimeError("Could not obtain Planetary Computer SAS token.")
+
+    # Download Sentinel-2 bands: B02(Blue), B03(Green), B04(Red), B08(NIR), B11(SWIR1), B12(SWIR2)
+    _cb("Downloading Sentinel-2 bands (10-20m resolution)...")
+    b02 = _read_band_window(_get_band_url_from_feature(best, ["B02", "blue"], sas_token), fetch_bbox)
+    _cb("  ✓ B02 (Blue) downloaded")
+    b03 = _read_band_window(_get_band_url_from_feature(best, ["B03", "green"], sas_token), fetch_bbox)
+    _cb("  ✓ B03 (Green) downloaded")
+    b04 = _read_band_window(_get_band_url_from_feature(best, ["B04", "red"], sas_token), fetch_bbox)
+    _cb("  ✓ B04 (Red) downloaded")
+    b08 = _read_band_window(_get_band_url_from_feature(best, ["B08", "nir"], sas_token), fetch_bbox)
+    _cb("  ✓ B08 (NIR) downloaded")
+    b11 = _read_band_window(_get_band_url_from_feature(best, ["B11", "swir16"], sas_token), fetch_bbox)
+    _cb("  ✓ B11 (SWIR1) downloaded")
+    b12 = _read_band_window(_get_band_url_from_feature(best, ["B12", "swir22"], sas_token), fetch_bbox)
+    _cb("  ✓ B12 (SWIR2) downloaded")
+
+    # Scale Sentinel-2 reflectance (divide by 10000)
+    _cb("Scaling Sentinel-2 reflectance values...")
+    blue  = b02.astype(np.float32) / 10000.0
+    green = b03.astype(np.float32) / 10000.0
+    red   = b04.astype(np.float32) / 10000.0
+    nir   = b08.astype(np.float32) / 10000.0
+    swir1 = b11.astype(np.float32) / 10000.0
+    swir2 = b12.astype(np.float32) / 10000.0
+
+    _cb("Computing AGDI (Amphibolite-Gneiss Discriminator Index, 2025)...")
+    agdi = np.divide(swir1 * green, nir * red + 1e-6)
+    _pv("AGDI — Amphibolite-Gneiss Discriminator (2025)", agdi, "RdYlGn_r")
+    agdi_val = round(float(np.nanmean(agdi)), 3)
+
+    _cb("Computing FSI (Ferrous Silicate Index)...")
+    fsi = np.divide(swir1, nir + 1e-6)
+    _pv("FSI — Ferrous Silicate (Mafic Rocks)", fsi, "YlOrRd")
+    fsi_val = round(float(np.nanmean(fsi)), 3)
+
+    _cb("Computing FEI (Ferrous Iron Index, 2024)...")
+    fei = (swir2 - red) + (nir - blue)
+    _pv("FEI — Ferrous Iron Index (2024)", fei, "coolwarm")
+    fei_val = round(float(np.nanmean(fei)), 3)
+
+    _cb("Computing NDGI (Normalized Difference Graphite Index, 2024)...")
+    ndgi = np.divide(swir1 - red, swir1 + red + 1e-6)
+    _pv("NDGI — Graphite Index (2024)", ndgi, "gray")
+    ndgi_val = round(float(np.nanmean(ndgi)), 3)
+
+    _cb("Computing Clay/Felsic Index (B11/B12)...")
+    clay_felsic = np.divide(swir1, swir2 + 1e-6)
+    _pv("Clay/Felsic Index", clay_felsic, "YlOrBr")
+    clay_felsic_val = round(float(np.nanmean(clay_felsic)), 3)
+
+    _cb("Computing Iron Oxide Index (B4/B2)...")
+    iron_oxide = np.divide(red, blue + 1e-6)
+    _pv("Iron Oxide Index", iron_oxide, "RdYlBu_r")
+    iron_oxide_val = round(float(np.nanmean(iron_oxide)), 3)
+
+    _cb("Computing Mafic-Felsic RGB Lithology Composite (B12/B11/B2)...")
+    def to_uint8(b):
+        mn, mx = np.nanpercentile(b, (2, 98))
+        return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
+    lithology_rgb = np.dstack([to_uint8(swir2), to_uint8(swir1), to_uint8(blue)])
+    _pv("Lithology Composite (B12-B11-B02)", lithology_rgb)
+
+    _cb("Computing alteration/lithology ratio composite (B11/B12, B11/B8, B4/B2)...")
+    alt_r = np.divide(swir1, swir2 + 1e-6)
+    alt_g = np.divide(swir1, nir + 1e-6)
+    alt_b = np.divide(red, blue + 1e-6)
+    alteration_rgb = np.dstack([to_uint8(alt_r), to_uint8(alt_g), to_uint8(alt_b)])
+    _pv("Alteration Composite (Clay-Mafic-IronOxide)", alteration_rgb)
+
+    # ── Host Rock Classification ─────────────────────────────────────────
+    _cb("Classifying host rock lithology from spectral signatures...")
+    
+    # Normalize indices to 0-1 for classification
+    def norm_01(arr):
+        mn, mx = np.nanpercentile(arr, (2, 98))
+        return np.clip((arr - mn) / (mx - mn + 1e-6), 0, 1)
+
+    agdi_n = norm_01(agdi)
+    fsi_n = norm_01(fsi)
+    fei_n = norm_01(fei)
+    ndgi_n = norm_01(ndgi)
+    clay_n = norm_01(clay_felsic)
+    io_n = norm_01(iron_oxide)
+
+    # Classification rules based on 2024-2025 literature:
+    # - High FSI + High FEI + Low AGDI = Mafic (Amphibolite / Greenstone)
+    # - High AGDI + High Clay = Felsic (Granite Gneiss / Migmatite)
+    # - High NDGI = Graphitic Schist/Gneiss (gold-hosting)
+    # - High Iron Oxide + Low Clay = Iron Oxide / Gossan
+    # - Moderate all = Mixed/Metamorphic
+
+    mafic_score = (fsi_n * 0.35) + (fei_n * 0.35) + ((1 - agdi_n) * 0.15) + (io_n * 0.15)
+    felsic_score = (agdi_n * 0.30) + (clay_n * 0.35) + ((1 - fsi_n) * 0.20) + ((1 - fei_n) * 0.15)
+    graphite_score = ndgi_n * 0.60 + (1 - io_n) * 0.20 + clay_n * 0.20
+    gossan_score = io_n * 0.50 + (1 - clay_n) * 0.25 + fsi_n * 0.25
+
+    # Dominant lithology per pixel
+    scores = np.stack([mafic_score, felsic_score, graphite_score, gossan_score])
+    litho_labels = np.argmax(scores, axis=0)
+    
+    litho_names = {
+        0: "Mafic (Amphibolite/Greenstone)",
+        1: "Felsic (Granite Gneiss/Migmatite)",
+        2: "Graphitic Schist/Gneiss",
+        3: "Iron Oxide/Gossan",
+    }
+
+    # Compute percentage of each lithology class
+    total_px = litho_labels.size
+    litho_pct = {}
+    for i in range(4):
+        pct = round(float(np.sum(litho_labels == i) / total_px * 100), 1)
+        litho_pct[litho_names[i]] = pct
+
+    # Dominant lithology
+    dominant_idx = int(np.argmax([np.sum(litho_labels == i) for i in range(4)]))
+    dominant_litho = litho_names[dominant_idx]
+
+    _cb(f"Host rock classification: {dominant_litho} ({litho_pct[dominant_litho]}%)")
+
+    # Create classified lithology map (colored)
+    litho_colors = {
+        0: [0.2, 0.6, 0.2],    # Mafic — green
+        1: [0.9, 0.4, 0.8],    # Felsic — magenta
+        2: [0.3, 0.3, 0.3],    # Graphitic — dark gray
+        3: [0.9, 0.3, 0.1],    # Gossan — red-orange
+    }
+    litho_map_rgb = np.zeros((*litho_labels.shape, 3), dtype=np.float32)
+    for i in range(4):
+        mask = litho_labels == i
+        litho_map_rgb[mask] = litho_colors[i]
+    _pv("Host Rock Lithology Classification Map", litho_map_rgb)
+
+    _cb("Sentinel-2 lithology analysis complete!")
+
+    return {
+        "satellite": "Sentinel-2",
+        "scene_date": scene_date[:10] if scene_date else str(year),
+        "cloud_cover": round(cloud, 1),
+        "fetch_bbox": fetch_bbox,
+        # Lithology maps
+        "agdi_map": agdi,
+        "fsi_map": fsi,
+        "fei_map": fei,
+        "ndgi_map": ndgi,
+        "clay_felsic_map": clay_felsic,
+        "iron_oxide_map": iron_oxide,
+        "lithology_rgb": lithology_rgb,
+        "alteration_rgb": alteration_rgb,
+        "lithology_classified": litho_map_rgb,
+        # Summary values
+        "agdi_val": agdi_val,
+        "fsi_val": fsi_val,
+        "fei_val": fei_val,
+        "ndgi_val": ndgi_val,
+        "clay_felsic_val": clay_felsic_val,
+        "iron_oxide_val": iron_oxide_val,
+        # Classification
+        "dominant_lithology": dominant_litho,
+        "lithology_percentages": litho_pct,
+        "mafic_score": round(float(np.nanmean(mafic_score)), 3),
+        "felsic_score": round(float(np.nanmean(felsic_score)), 3),
+        "graphite_score": round(float(np.nanmean(graphite_score)), 3),
+        "gossan_score": round(float(np.nanmean(gossan_score)), 3),
+    }
+
+
+def fetch_aster_tir_indices(lat, lon, year, bbox=None, progress_cb=None):
+    """
+    Fetch ASTER L1T Thermal Infrared bands from Planetary Computer
+    and compute Ninomiya's silicate rock indices:
+    - Quartz Index (QI) = B11² / (B10 × B12)
+    - Carbonate Index (CI) = B13 / B14
+    - Mafic Index (MI) = B12 / B13
+    """
+    def _cb(msg):
+        if progress_cb:
+            progress_cb(msg)
+
+    if bbox is not None:
+        fetch_bbox = bbox
+    else:
+        buf = DEFAULT_BUFFER_DEG
+        fetch_bbox = [lon - buf, lat - buf, lon + buf, lat + buf]
+
+    pystac_client, planetary_computer = _get_pystac()
+
+    _cb("Searching ASTER L1T scenes on Planetary Computer...")
+    catalog = pystac_client.Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=planetary_computer.sign_inplace
+    )
+
+    # Search ASTER L1T with cloud filter
+    search = catalog.search(
+        collections=["aster-l1t"],
+        bbox=fetch_bbox,
+        datetime=f"{year}-01-01T00:00:00Z/{year}-12-31T23:59:59Z",
+    )
+    items = list(search.items())
+
+    if not items:
+        _cb("No ASTER scenes found for this area/year. Skipping TIR indices.")
+        return None
+
+    # Pick lowest cloud cover
+    best_item = min(items, key=lambda i: i.properties.get("eo:cloud_cover", 100))
+    cloud = best_item.properties.get("eo:cloud_cover", 0)
+    _cb(f"Best ASTER scene: cloud {cloud:.1f}%")
+
+    # Get signed URLs for TIR bands (90m resolution)
+    _cb("Downloading ASTER TIR bands (B10-B14, 90m resolution)...")
+
+    def _read_aster_band(item, band_names):
+        """Read a single ASTER TIR band as numpy array."""
+        import rasterio
+        from rasterio.windows import from_bounds
+        for bname in band_names:
+            if bname in item.assets:
+                href = item.assets[bname].href
+                with rasterio.open(href) as src:
+                    win = from_bounds(fetch_bbox[0], fetch_bbox[1],
+                                       fetch_bbox[2], fetch_bbox[3], src.transform)
+                    data = src.read(1, window=win)
+                    return data.astype(np.float32)
+        return None
+
+    b10 = _read_aster_band(best_item, ["TIR_Band10", "tir_b10", "B10"])
+    b11 = _read_aster_band(best_item, ["TIR_Band11", "tir_b11", "B11"])
+    b12 = _read_aster_band(best_item, ["TIR_Band12", "tir_b12", "B12"])
+    b13 = _read_aster_band(best_item, ["TIR_Band13", "tir_b13", "B13"])
+    b14 = _read_aster_band(best_item, ["TIR_Band14", "tir_b14", "B14"])
+
+    if any(b is None for b in [b10, b11, b12, b13, b14]):
+        _cb("Could not download all ASTER TIR bands. Skipping.")
+        return None
+
+    _cb("Computing Ninomiya's silicate indices...")
+
+    # Quartz Index = B11² / (B10 × B12)
+    quartz_index = np.divide(b11 * b11, b10 * b12 + 1e-6)
+    qi_val = round(float(np.nanmean(quartz_index)), 3)
+
+    # Carbonate Index = B13 / B14
+    carbonate_index = np.divide(b13, b14 + 1e-6)
+    ci_val = round(float(np.nanmean(carbonate_index)), 3)
+
+    # Mafic Index = B12 / B13
+    mafic_index = np.divide(b12, b13 + 1e-6)
+    mi_val = round(float(np.nanmean(mafic_index)), 3)
+
+    _cb(f"Quartz Index: {qi_val} | Carbonate Index: {ci_val} | Mafic Index: {mi_val}")
+
+    # Create TIR composite RGB (QI=Red, CI=Green, MI=Blue)
+    def to_uint8(b):
+        mn, mx = np.nanpercentile(b, (2, 98))
+        return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
+
+    tir_rgb = np.dstack([to_uint8(quartz_index), to_uint8(carbonate_index), to_uint8(mafic_index)])
+
+    _cb("ASTER TIR analysis complete!")
+
+    return {
+        "satellite": "ASTER-TIR",
+        "quartz_index": quartz_index,
+        "carbonate_index": carbonate_index,
+        "mafic_index": mafic_index,
+        "tir_rgb": tir_rgb,
+        "qi_val": qi_val,
+        "ci_val": ci_val,
+        "mi_val": mi_val,
+        "fetch_bbox": fetch_bbox,
     }
