@@ -156,7 +156,7 @@ selected_basemap = st.sidebar.selectbox(
 selected_year = st.sidebar.slider("Select Analysis Year", 1990, 2026, 2024)
 search_method = st.sidebar.radio(
     "Select Landfolio Lookup Method",
-    ["(a) License # Search", "(c) Map Selection"]
+    ["(a) License # Search", "(b) Coordinates + Radius", "(c) Map Selection"]
 )
 
 if search_method == "(a) License # Search":
@@ -188,6 +188,67 @@ if search_method == "(a) License # Search":
                 cad_status.update(label=f"License {license_num} loaded!", state="complete", expanded=False)
             else:
                 cad_status.update(label=f"License '{license_num}' not found", state="error")
+elif search_method == "(b) Coordinates + Radius":
+    coord_col1, coord_col2 = st.sidebar.columns(2)
+    with coord_col1:
+        coord_lat = st.number_input(
+            "Latitude", value=-15.0, min_value=-27.0, max_value=-10.0,
+            format="%.6f", help="Latitude em graus decimais (ex: -15.5451)"
+        )
+    with coord_col2:
+        coord_lon = st.number_input(
+            "Longitude", value=34.0, min_value=30.0, max_value=42.0,
+            format="%.6f", help="Longitude em graus decimais (ex: 34.1422)"
+        )
+    radius_m = st.sidebar.slider(
+        "Detection Radius (meters)", min_value=500, max_value=50000,
+        value=5000, step=500, help="Raio de deteccao em metros (ex: 5000m = 5km)"
+    )
+    search_clicked = st.sidebar.button("Search Coordinates", type="primary", use_container_width=True)
+
+    if search_clicked:
+        with st.sidebar.status("Creating search area...", expanded=True) as cad_status:
+            st.write(f"Center: {coord_lat:.6f}, {coord_lon:.6f}")
+            st.write(f"Radius: {radius_m}m ({radius_m/1000:.1f} km)")
+
+            # Generate circular polygon from coordinates + radius
+            import math
+            R_EARTH = 6378137.0  # meters
+            num_points = 64
+            coords_ring = []
+            for i in range(num_points + 1):
+                angle = 2 * math.pi * i / num_points
+                # Approximate offsets in meters → degrees
+                d_lat = (radius_m / R_EARTH) * math.cos(angle) * (180 / math.pi)
+                d_lon = (radius_m / R_EARTH) * math.sin(angle) * (180 / math.pi) / max(math.cos(math.radians(coord_lat)), 1e-6)
+                coords_ring.append([coord_lon + d_lon, coord_lat + d_lat])
+
+            circle_polygon = {
+                "type": "Feature",
+                "properties": {"name": f"Custom Area ({radius_m}m radius)"},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [coords_ring]
+                }
+            }
+
+            st.session_state["map_center"]         = [float(coord_lat), float(coord_lon)]
+            st.session_state["active_polygon"]      = circle_polygon
+            st.session_state["concession_metadata"] = {
+                "Codigo da Licenca (Code)": "CUSTOM",
+                "Nome da Concessao": f"Custom Area ({radius_m/1000:.1f}km radius)",
+                "Titular (Holder Company)": "Custom Search",
+                "Area / Dimensao": f"~{math.pi * (radius_m/1000)**2:.1f} km²",
+                "Data de Validade (Expiry)": "N/A",
+                "Substancias": "Gold / Multi-mineral",
+            }
+            st.session_state["satellite_data"]      = None
+            st.session_state["exploration_targets"] = None
+            st.session_state["m_data"] = fetch_and_calculate_spatz(
+                [float(coord_lat), float(coord_lon)], None, selected_year
+            )
+            st.session_state["m_data"]["_is_predictive"] = True
+            cad_status.update(label=f"Search area created ({radius_m/1000:.1f}km radius)", state="complete", expanded=False)
 else:
     st.sidebar.info("Clique no mapa para selecionar coordenadas.")
 
