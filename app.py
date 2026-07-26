@@ -754,9 +754,13 @@ targets  = st.session_state.get("exploration_targets")
 with st.expander("📋 Report Author & Professional Information", expanded=True):
     rc1, rc2 = st.columns(2)
     with rc1:
-        report_author = st.text_input("Prepared by (Nome do Responsavel)*", value="",
-            placeholder="e.g., Eng. Badr Merhi")
-        report_title = st.selectbox("Professional Title (Cargo)", [
+        report_author = st.text_input(
+            "Prepared by (Nome do Responsavel)*",
+            value=st.session_state.get("report_author", ""),
+            placeholder="e.g., Eng. Yasser Abu baker",
+            key="form_author"
+        )
+        title_options = [
             "Geologo Senior de Exploracao",
             "Engenheiro de Minas",
             "Diretor Tecnico",
@@ -764,36 +768,68 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
             "Geofisico",
             "Especialista em Sensoriamento Remoto",
             "Outro",
-        ])
+        ]
+        saved_title = st.session_state.get("report_title", "Geologo Senior de Exploracao")
+        title_idx = title_options.index(saved_title) if saved_title in title_options else 0
+        report_title = st.selectbox(
+            "Professional Title (Cargo)", title_options,
+            index=title_idx, key="form_title"
+        )
         if report_title == "Outro":
-            report_title = st.text_input("Specify title", placeholder="Enter your title")
+            report_title = st.text_input(
+                "Specify title",
+                value=st.session_state.get("report_title_custom", ""),
+                placeholder="Enter your title", key="form_title_custom"
+            )
+            st.session_state["report_title_custom"] = report_title
     with rc2:
-        report_company = st.text_input("Company / Organization (Empresa)*", value="",
-            placeholder="e.g., SatIntel Exploration Ltd.")
-        report_license_no = st.text_input("Professional License No. (No. de Inscricao)",
-            placeholder="e.g., CEA-1234/MZ")
-        report_report_no = st.text_input("Report Reference No. (No. do Relatorio)",
-            placeholder="e.g., SAT-2024-001")
+        report_company = st.text_input(
+            "Company / Organization (Empresa)*",
+            value=st.session_state.get("report_company", ""),
+            placeholder="e.g., GIS & REMOTE SENSING POPULAR, Lda",
+            key="form_company"
+        )
+        report_license_no = st.text_input(
+            "Professional License No. (No. de Inscricao)",
+            value=st.session_state.get("report_license_no", ""),
+            placeholder="e.g., 10000",
+            key="form_license_no"
+        )
+        report_report_no = st.text_input(
+            "Report Reference No. (No. do Relatorio)",
+            value=st.session_state.get("report_ref_no", ""),
+            placeholder="e.g., POP002/07/26",
+            key="form_report_no"
+        )
 
     rc3, rc4 = st.columns(2)
     with rc3:
-        report_date = st.date_input("Report Date (Data do Relatorio)",
-            value=st.session_state.get("report_date", datetime.now().date()))
+        report_date = st.date_input(
+            "Report Date (Data do Relatorio)",
+            value=st.session_state.get("report_date", datetime.now().date()),
+            key="form_date"
+        )
     with rc4:
-        report_classification = st.selectbox("Document Classification", [
+        classif_options = [
             "Confidencial - Uso Interno",
             "Restrito - Cliente",
             "Tecnico - Informativo",
             "Preliminar - Nao Revisado",
-        ])
+        ]
+        saved_classif = st.session_state.get("report_classification", "Confidencial - Uso Interno")
+        classif_idx = classif_options.index(saved_classif) if saved_classif in classif_options else 0
+        report_classification = st.selectbox(
+            "Document Classification", classif_options,
+            index=classif_idx, key="form_classification"
+        )
 
-    # Store in session for PDF generation
-    st.session_state["report_author"] = report_author
-    st.session_state["report_title"] = report_title
-    st.session_state["report_company"] = report_company
-    st.session_state["report_license_no"] = report_license_no
-    st.session_state["report_ref_no"] = report_report_no
-    st.session_state["report_date"] = report_date
+    # Persist immediately so values survive reruns
+    st.session_state["report_author"]         = report_author
+    st.session_state["report_title"]          = report_title
+    st.session_state["report_company"]        = report_company
+    st.session_state["report_license_no"]     = report_license_no
+    st.session_state["report_ref_no"]         = report_report_no
+    st.session_state["report_date"]           = report_date
     st.session_state["report_classification"] = report_classification
 
 if st.button("📋 Generate Comprehensive Geological Synthesis Report",
