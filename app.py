@@ -16,6 +16,8 @@ from georemote import (
     get_real_mozambique_cadastre,
     search_cadastre_by_name,
     fetch_satellite_imagery,
+    fetch_sentinel2_lithology,
+    fetch_aster_tir_indices,
     polygon_to_bbox,
     generate_exploration_targets,
 )
@@ -127,6 +129,8 @@ DEFAULTS = {
     "name_search_results": None,
     "name_search_term": "",
     "cached_report_text": "",
+    "lithology_data": None,
+    "aster_tir_data": None,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -910,6 +914,207 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     st.session_state["report_date"]           = report_date
     st.session_state["report_classification"] = report_classification
 
+
+    # ── HOST ROCK LITHOLOGY SECTION (2024-2026 Methods) ─────────────
+    st.markdown("---")
+    st.markdown("### 🪨 Host Rock Lithology Identification")
+    st.caption("Sentinel-2 spectral indices (2024-2025) + ASTER Thermal Infrared (Ninomiya)")
+
+    col_lith1, col_lith2 = st.columns(2)
+
+    with col_lith1:
+        if st.button("🔬 Run Sentinel-2 Lithology Analysis", use_container_width=True):
+            with st.status("Fetching Sentinel-2 data & computing lithology indices...", expanded=True) as lith_status:
+                st.write("Connecting to Earth Search (AWS STAC)...")
+                try:
+                    lith_result = fetch_sentinel2_lithology(
+                        st.session_state["map_center"][0],
+                        st.session_state["map_center"][1],
+                        selected_year,
+                        bbox=st.session_state.get("satellite_data", {}).get("fetch_bbox") if st.session_state.get("satellite_data") else None,
+                        progress_cb=lambda msg: st.write(msg),
+                    )
+                    if lith_result:
+                        st.session_state["lithology_data"] = lith_result
+                        lith_status.update(label="Lithology analysis complete!", state="complete", expanded=False)
+                    else:
+                        lith_status.update(label="No Sentinel-2 data available for this area", state="error")
+                except Exception as e:
+                    lith_status.update(label=f"Error: {e}", state="error")
+
+    with col_lith2:
+        if st.button("🌋 Run ASTER TIR Silicate Analysis", use_container_width=True):
+            with st.status("Fetching ASTER Thermal Infrared data...", expanded=True) as tir_status:
+                st.write("Searching Planetary Computer ASTER L1T...")
+                try:
+                    tir_result = fetch_aster_tir_indices(
+                        st.session_state["map_center"][0],
+                        st.session_state["map_center"][1],
+                        selected_year,
+                        bbox=st.session_state.get("satellite_data", {}).get("fetch_bbox") if st.session_state.get("satellite_data") else None,
+                        progress_cb=lambda msg: st.write(msg),
+                    )
+                    if tir_result:
+                        st.session_state["aster_tir_data"] = tir_result
+                        tir_status.update(label="ASTER TIR analysis complete!", state="complete", expanded=False)
+                    else:
+                        tir_status.update(label="No ASTER TIR data available", state="error")
+                except Exception as e:
+                    tir_status.update(label=f"Error: {e}", state="error")
+
+    # Display lithology results
+    lith = st.session_state.get("lithology_data")
+    if lith:
+        st.markdown("#### 🪨 Sentinel-2 Host Rock Classification")
+        dom = lith["dominant_lithology"]
+        pct = lith["lithology_percentages"][dom]
+        if "Mafic" in dom:
+            badge_color = "#228B22"
+        elif "Felsic" in dom:
+            badge_color = "#C71585"
+        elif "Graphitic" in dom:
+            badge_color = "#444444"
+        else:
+            badge_color = "#CC4400"
+        st.markdown(f'<div style="background:{badge_color};color:white;padding:10px;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;">Dominant Host Rock: {dom} ({pct}%)</div>', unsafe_allow_html=True)
+
+        st.markdown("**Lithology Distribution:**")
+        for name, pct_val in lith["lithology_percentages"].items():
+            st.write(f"- {name}: **{pct_val}%**")
+
+        st.markdown("**Spectral Indices (2024-2025):**")
+        idx_col1, idx_col2 = st.columns(2)
+        with idx_col1:
+            st.metric("AGDI (Amphibolite-Gneiss)", lith["agdi_val"])
+            st.metric("FSI (Ferrous Silicate)", lith["fsi_val"])
+            st.metric("FEI (Ferrous Iron 2024)", lith["fei_val"])
+        with idx_col2:
+            st.metric("NDGI (Graphite 2024)", lith["ndgi_val"])
+            st.metric("Clay/Felsic (B11/B12)", lith["clay_felsic_val"])
+            st.metric("Iron Oxide (B4/B2)", lith["iron_oxide_val"])
+
+        st.markdown("**Lithology Classification Scores:**")
+        score_col1, score_col2 = st.columns(2)
+        with score_col1:
+            st.metric("Mafic Score", f"{lith['mafic_score']:.3f}")
+            st.metric("Graphitic Score", f"{lith['graphite_score']:.3f}")
+        with score_col2:
+            st.metric("Felsic Score", f"{lith['felsic_score']:.3f}")
+            st.metric("Gossan Score", f"{lith['gossan_score']:.3f}")
+
+        st.markdown("**Lithology Maps:**")
+        map_col1, map_col2 = st.columns(2)
+        with map_col1:
+            st.markdown("**Host Rock Classification Map**")
+            fig, ax = plt.subplots(figsize=(6, 6))
+            ax.imshow(lith["lithology_classified"])
+            ax.set_title("Classified Lithology", fontsize=10)
+            ax.axis("off")
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor=[0.2,0.6,0.2], label="Mafic (Amphibolite)"),
+                Patch(facecolor=[0.9,0.4,0.8], label="Felsic (Gneiss)"),
+                Patch(facecolor=[0.3,0.3,0.3], label="Graphitic Schist"),
+                Patch(facecolor=[0.9,0.3,0.1], label="Iron Oxide/Gossan"),
+            ]
+            ax.legend(handles=legend_elements, loc="lower right", fontsize=6, framealpha=0.8)
+            st.pyplot(fig)
+            plt.close()
+
+            st.markdown("**AGDI (Amphibolite-Gneiss Discriminator, 2025)**")
+            fig2, ax2 = plt.subplots(figsize=(6, 6))
+            im2 = ax2.imshow(lith["agdi_map"], cmap="RdYlGn_r")
+            ax2.set_title("AGDI \u2014 Low = Amphibolite, High = Gneiss", fontsize=8)
+            ax2.axis("off")
+            plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+            st.pyplot(fig2)
+            plt.close()
+
+        with map_col2:
+            st.markdown("**Lithology Composite (B12-B11-B02)**")
+            fig3, ax3 = plt.subplots(figsize=(6, 6))
+            ax3.imshow(lith["lithology_rgb"])
+            ax3.set_title("S2 Geology Composite", fontsize=10)
+            ax3.axis("off")
+            st.pyplot(fig3)
+            plt.close()
+
+            st.markdown("**Alteration Composite (Clay-Mafic-IronOxide)**")
+            fig4, ax4 = plt.subplots(figsize=(6, 6))
+            ax4.imshow(lith["alteration_rgb"])
+            ax4.set_title("Alteration/Lithology RGB", fontsize=10)
+            ax4.axis("off")
+            st.pyplot(fig4)
+            plt.close()
+
+        with st.expander("\U0001f4ca Detailed Spectral Index Maps"):
+            idx_map_col1, idx_map_col2 = st.columns(2)
+            with idx_map_col1:
+                st.markdown("**FSI (Ferrous Silicate \u2014 Mafic)**")
+                fig5, ax5 = plt.subplots(figsize=(5, 5))
+                im5 = ax5.imshow(lith["fsi_map"], cmap="YlOrRd")
+                ax5.set_title("FSI \u2014 High = Mafic/Greenstone", fontsize=8)
+                ax5.axis("off")
+                plt.colorbar(im5, ax=ax5, fraction=0.046, pad=0.04)
+                st.pyplot(fig5)
+                plt.close()
+
+                st.markdown("**NDGI (Graphite Index, 2024)**")
+                fig6, ax6 = plt.subplots(figsize=(5, 5))
+                im6 = ax6.imshow(lith["ndgi_map"], cmap="gray")
+                ax6.set_title("NDGI \u2014 High = Graphitic Schist", fontsize=8)
+                ax6.axis("off")
+                plt.colorbar(im6, ax=ax6, fraction=0.046, pad=0.04)
+                st.pyplot(fig6)
+                plt.close()
+
+            with idx_map_col2:
+                st.markdown("**FEI (Ferrous Iron Index, 2024)**")
+                fig7, ax7 = plt.subplots(figsize=(5, 5))
+                im7 = ax7.imshow(lith["fei_map"], cmap="coolwarm")
+                ax7.set_title("FEI \u2014 High = Mafic Dykes", fontsize=8)
+                ax7.axis("off")
+                plt.colorbar(im7, ax=ax7, fraction=0.046, pad=0.04)
+                st.pyplot(fig7)
+                plt.close()
+
+                st.markdown("**Clay/Felsic Index**")
+                fig8, ax8 = plt.subplots(figsize=(5, 5))
+                im8 = ax8.imshow(lith["clay_felsic_map"], cmap="YlOrBr")
+                ax8.set_title("Clay/Felsic (B11/B12)", fontsize=8)
+                ax8.axis("off")
+                plt.colorbar(im8, ax=ax8, fraction=0.046, pad=0.04)
+                st.pyplot(fig8)
+                plt.close()
+
+    # Display ASTER TIR results
+    tir = st.session_state.get("aster_tir_data")
+    if tir:
+        st.markdown("#### \U0001f30b ASTER Thermal Infrared \u2014 Silicate Rock Indices")
+        tir_col1, tir_col2 = st.columns(2)
+        with tir_col1:
+            st.metric("Quartz Index (QI)", tir["qi_val"], help="High = quartz-rich rocks, quartz veins, silicification")
+            st.metric("Carbonate Index (CI)", tir["ci_val"], help="High = marble, limestone, carbonatite")
+            st.metric("Mafic Index (MI)", tir["mi_val"], help="High = amphibolite, basalt, gabbro")
+
+            st.markdown("**Interpretation:**")
+            if tir["qi_val"] > 1.0:
+                st.write("\U0001f7e1 High quartz content \u2014 silicification or quartz-rich host rocks")
+            if tir["mi_val"] > 1.0:
+                st.write("\U0001f7e2 High mafic content \u2014 amphibolites, greenstones, mafic dykes")
+            if tir["ci_val"] > 1.0:
+                st.write("\u26aa High carbonate content \u2014 marble, carbonatite, or carbonate alteration")
+
+        with tir_col2:
+            st.markdown("**TIR Composite (QI-CI-MI)**")
+            fig_tir, ax_tir = plt.subplots(figsize=(6, 6))
+            ax_tir.imshow(tir["tir_rgb"])
+            ax_tir.set_title("ASTER TIR Index Composite", fontsize=10)
+            ax_tir.axis("off")
+            st.pyplot(fig_tir)
+            plt.close()
+
+    st.markdown("---")
 if st.button("📋 Generate Comprehensive Geological Synthesis Report",
              use_container_width=True, type="primary"):
     # Warn if author info is empty
@@ -969,6 +1174,33 @@ ANALISE ESTRUTURAL:
 - Interseccoes Alta Confianca: {sat_data.get('intersection_count', 0)}
 - Indice Densidade Interseccao: {sat_data.get('intersection_density_val', 0)}"""
 
+        
+        # Add lithology data to prompt if available
+        litho = st.session_state.get("lithology_data")
+        if litho:
+            prompt += f"""
+
+IDENTIFICACAO DA ROCHA HOSPEDEIRA (Sentinel-2, 2024-2025):
+- Rocha Dominante: {litho['dominant_lithology']}
+- Distribuicao Litologica: {litho['lithology_percentages']}
+- AGDI (Anfibolito-Gnaisse, 2025): {litho['agdi_val']}
+- FSI (Silicato Ferroso): {litho['fsi_val']}
+- FEI (Ferro Ferroso, 2024): {litho['fei_val']}
+- NDGI (Grafite, 2024): {litho['ndgi_val']}
+- Clay/Felsic (B11/B12): {litho['clay_felsic_val']}
+- Iron Oxide (B4/B2): {litho['iron_oxide_val']}
+- Score Mafico: {litho['mafic_score']} | Score Felsico: {litho['felsic_score']}
+- Score Grafite: {litho['graphite_score']} | Score Gossan: {litho['gossan_score']}"""
+
+        tir_data = st.session_state.get("aster_tir_data")
+        if tir_data:
+            prompt += f"""
+
+INDICES TIR ASTER (Silicatos, Ninomiya):
+- Quartz Index: {tir_data['qi_val']}
+- Carbonate Index: {tir_data['ci_val']}
+- Mafic Index: {tir_data['mi_val']}"""
+
         if targets:
             high_c = sum(1 for t in targets if t["priority"] == "HIGH")
             med_c  = sum(1 for t in targets if t["priority"] == "MEDIUM")
@@ -998,6 +1230,9 @@ Escreva 3 paragrafos: enquadramento no Cinturao Pan-Africano Mocambicano (650-50
 
 3. ANALISE DE ALTERACAO HIDROTERMAL
 Escreva 3 paragrafos: interpretacao dos indices de oxido de ferro e argila, resultados do Crosta PCA, e classificacao da intensidade de alteracao. Cite os valores numericos.
+
+3.5 IDENTIFICACAO DA ROCHA HOSPEDEIRA (se dados Sentinel-2/ASTER disponiveis)
+Escreva 2-3 paragrafos: interpretacao dos indices AGDI, FSI, FEI, NDGI, e classificacao litologica dominante. Identifique o tipo de rocha hospedeira (anfibolito, gnaisse granitico, xisto grafítico, etc.) e sua relacao com a mineralizacao aurifera. Se disponivel, interprete os indices TIR do ASTER (Quartz, Carbonate, Mafic).
 
 4. ANALISE ESTRUTURAL
 Escreva 3 paragrafos: interpretacao de lineamentos, interseccoes de alta confianca, orientacoes dominantes, e o papel no controle da mineralizacao.
