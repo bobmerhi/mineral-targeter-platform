@@ -756,11 +756,12 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     with rc1:
         report_author = st.text_input(
             "Prepared by (Nome do Responsavel)*",
-            value=st.session_state.get("report_author", ""),
+            value=st.session_state.get("report_author", "Eng. Francisco Xavier dos Santos"),
             placeholder="e.g., Eng. Yasser Abu baker",
             key="form_author"
         )
         title_options = [
+            "CEO & Director",
             "Geologo Senior de Exploracao",
             "Engenheiro de Minas",
             "Diretor Tecnico",
@@ -769,7 +770,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
             "Especialista em Sensoriamento Remoto",
             "Outro",
         ]
-        saved_title = st.session_state.get("report_title", "Geologo Senior de Exploracao")
+        saved_title = st.session_state.get("report_title", "CEO & Director")
         title_idx = title_options.index(saved_title) if saved_title in title_options else 0
         report_title = st.selectbox(
             "Professional Title (Cargo)", title_options,
@@ -785,7 +786,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     with rc2:
         report_company = st.text_input(
             "Company / Organization (Empresa)*",
-            value=st.session_state.get("report_company", ""),
+            value=st.session_state.get("report_company", "GWM"),
             placeholder="e.g., GIS & REMOTE SENSING POPULAR, Lda",
             key="form_company"
         )
