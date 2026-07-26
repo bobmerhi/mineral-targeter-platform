@@ -14,7 +14,10 @@ from ibm_watsonx_ai.foundation_models import ModelInference
 from georemote import (
     fetch_and_calculate_spatz,
     get_real_mozambique_cadastre,
+    search_cadastre_by_name,
     fetch_satellite_imagery,
+    fetch_sentinel2_lithology,
+    fetch_aster_tir_indices,
     polygon_to_bbox,
     generate_exploration_targets,
 )
@@ -123,6 +126,11 @@ DEFAULTS = {
     "exploration_targets": None,
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
+    "name_search_results": None,
+    "name_search_term": "",
+    "cached_report_text": "",
+    "lithology_data": None,
+    "aster_tir_data": None,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -156,7 +164,7 @@ selected_basemap = st.sidebar.selectbox(
 selected_year = st.sidebar.slider("Select Analysis Year", 1990, 2026, 2024)
 search_method = st.sidebar.radio(
     "Select Landfolio Lookup Method",
-    ["(a) License # Search", "(b) Coordinates + Radius", "(c) Map Selection"]
+    ["(a) License # Search", "(b) License Name Search", "(c) Coordinates + Radius", "(d) Map Selection"]
 )
 
 if search_method == "(a) License # Search":
@@ -188,7 +196,81 @@ if search_method == "(a) License # Search":
                 cad_status.update(label=f"License {license_num} loaded!", state="complete", expanded=False)
             else:
                 cad_status.update(label=f"License '{license_num}' not found", state="error")
-elif search_method == "(b) Coordinates + Radius":
+elif search_method == "(b) License Name Search":
+    name_input = st.sidebar.text_input(
+        "Enter License Name or Holder",
+        value=st.session_state.get("name_search_term", ""),
+        placeholder="e.g., Tete Platinum, EXXON, or Ouro",
+        help="Search by concession name or holder company. Multiple results may appear."
+    )
+    name_search_clicked = st.sidebar.button("Search by Name", type="primary", use_container_width=True)
+
+    if name_search_clicked and name_input.strip():
+        with st.sidebar.status("Searching INAMI cadastre by name...", expanded=True) as name_status:
+            st.write("Querying Landfolio portal...")
+            results = search_cadastre_by_name(name_input.strip())
+            if results:
+                st.session_state["name_search_results"] = results
+                st.session_state["name_search_term"] = name_input.strip()
+                name_status.update(label=f"Found {len(results)} matching license(s)", state="complete", expanded=False)
+            else:
+                st.session_state["name_search_results"] = None
+                name_status.update(label=f"No licenses found for '{name_input.strip()}'", state="error")
+
+    # Show search results for selection
+    if st.session_state.get("name_search_results"):
+        results = st.session_state["name_search_results"]
+        st.sidebar.markdown(f"**{len(results)} license(s) found** \u2014 select one:")
+
+        labels = []
+        for r in results:
+            holder_short = r['holder'][:30] if r['holder'] != 'N/A' else 'N/A'
+            labels.append(f"{r['code']} \u2014 {r['name']} ({holder_short})")
+
+        selected_idx = st.sidebar.selectbox(
+            "Select License",
+            range(len(results)),
+            format_func=lambda i: labels[i],
+            key="name_search_select"
+        )
+
+        if selected_idx is not None:
+            r = results[selected_idx]
+            with st.sidebar.container():
+                st.markdown(f"""
+                **{r['name']}**
+                - Code: {r['code']} | Status: {r['status']}
+                - Holder: {r['holder']}
+                - Area: {r['area']}
+                - Commodities: {r['commodities']}
+                - Expiry: {r['expiry']}
+                """)
+
+            if st.sidebar.button("Load Selected License", type="primary", use_container_width=True):
+                with st.sidebar.status("Loading license...", expanded=True) as load_status:
+                    st.write(f"Fetching {r['code']} from cadastre...")
+                    db_result = get_real_mozambique_cadastre(r["code"])
+                    if db_result["found"]:
+                        name = db_result.get("metadata", {}).get("Nome da Concessao", r["code"])
+                        st.write(f"Found: {name}")
+                        st.session_state["map_center"]         = [db_result["lat"], db_result["lon"]]
+                        st.session_state["active_polygon"]      = db_result["polygon"]
+                        st.session_state["concession_metadata"] = db_result["metadata"]
+                        st.session_state["satellite_data"]      = None
+                        st.session_state["exploration_targets"] = None
+                        st.session_state["last_license"]        = r["code"]
+                        st.session_state["m_data"] = fetch_and_calculate_spatz(
+                            [db_result["lat"], db_result["lon"]], None, selected_year
+                        )
+                        st.session_state["m_data"]["_is_predictive"] = True
+                        load_status.update(label=f"License {r['code']} loaded!", state="complete", expanded=False)
+                    else:
+                        load_status.update(label=f"Failed to load license {r['code']}", state="error")
+
+    elif st.session_state.get("name_search_term"):
+        st.sidebar.info(f"No results for '{st.session_state['name_search_term']}'. Try a different name.")
+
+elif search_method == "(c) Coordinates + Radius":
     st.sidebar.markdown("Paste coordinates (e.g. `-15.5451, 34.1422`)")
     coord_paste = st.sidebar.text_input(
         "Lat, Lon",
@@ -485,8 +567,8 @@ if sat_data is not None:
                     masked[~mask] = 0  # black outside polygon
                     display = masked
                 else:
-                    masked = img_array.copy()
-                    masked[~mask] = np.nan
+                    masked = img_array.copy().astype(np.float64)
+                    masked[~mask] = 0  # Use 0 instead of NaN so colormap renders properly
                     display = masked
             else:
                 display = img_array
@@ -591,12 +673,16 @@ if sat_data is not None:
     lm1, lm2 = st.columns(2)
     with lm1:
         st.markdown("#### Lineament Density Map")
-        st.pyplot(make_fig(sat_data["lineament_density_map"], cmap="hot",
+        lm_data = sat_data["lineament_density_map"]
+        lm_vmax = float(np.nanmax(lm_data)) if np.nanmax(lm_data) > 0 else 1.0
+        st.pyplot(make_fig(lm_data, cmap="hot", vmin=0, vmax=lm_vmax,
             title="Structural Lineament Density", label="Density", show_targets=True),
             use_container_width=True); plt.close()
     with lm2:
         st.markdown("#### Lineament Intersection Map")
-        st.pyplot(make_fig(sat_data["intersection_map"], cmap="magma",
+        im_data = sat_data["intersection_map"]
+        im_vmax = float(np.nanmax(im_data)) if np.nanmax(im_data) > 0 else 1.0
+        st.pyplot(make_fig(im_data, cmap="magma", vmin=0, vmax=im_vmax,
             title="Lineament Intersection Density", label="Index", show_targets=True),
             use_container_width=True); plt.close()
 
@@ -833,8 +919,210 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     st.session_state["report_date"]           = report_date
     st.session_state["report_classification"] = report_classification
 
+
+
+# ── HOST ROCK LITHOLOGY SECTION (2024-2026 Methods) ─────────────
+st.markdown("---")
+st.markdown("### 🪨 Host Rock Lithology Identification")
+st.caption("Sentinel-2 spectral indices (2024-2025) + ASTER Thermal Infrared (Ninomiya)")
+
+col_lith1, col_lith2 = st.columns(2)
+
+with col_lith1:
+    if st.button("🔬 Run Sentinel-2 Lithology Analysis", use_container_width=True):
+        with st.status("Fetching Sentinel-2 data & computing lithology indices...", expanded=True) as lith_status:
+            st.write("Connecting to Earth Search (AWS STAC)...")
+            try:
+                lith_result = fetch_sentinel2_lithology(
+                    st.session_state["map_center"][0],
+                    st.session_state["map_center"][1],
+                    selected_year,
+                    bbox=st.session_state.get("satellite_data", {}).get("fetch_bbox") if st.session_state.get("satellite_data") else None,
+                    progress_cb=lambda msg: st.write(msg),
+                )
+                if lith_result:
+                    st.session_state["lithology_data"] = lith_result
+                    lith_status.update(label="Lithology analysis complete!", state="complete", expanded=False)
+                else:
+                    lith_status.update(label="No Sentinel-2 data available for this area", state="error")
+            except Exception as e:
+                lith_status.update(label=f"Error: {e}", state="error")
+
+with col_lith2:
+    if st.button("🌋 Run ASTER TIR Silicate Analysis", use_container_width=True):
+        with st.status("Fetching ASTER Thermal Infrared data...", expanded=True) as tir_status:
+            st.write("Searching Planetary Computer ASTER L1T...")
+            try:
+                tir_result = fetch_aster_tir_indices(
+                    st.session_state["map_center"][0],
+                    st.session_state["map_center"][1],
+                    selected_year,
+                    bbox=st.session_state.get("satellite_data", {}).get("fetch_bbox") if st.session_state.get("satellite_data") else None,
+                    progress_cb=lambda msg: st.write(msg),
+                )
+                if tir_result:
+                    st.session_state["aster_tir_data"] = tir_result
+                    tir_status.update(label="ASTER TIR analysis complete!", state="complete", expanded=False)
+                else:
+                    tir_status.update(label="No ASTER TIR data available", state="error")
+            except Exception as e:
+                tir_status.update(label=f"Error: {e}", state="error")
+
+# Display lithology results
+lith = st.session_state.get("lithology_data")
+if lith:
+    st.markdown("#### 🪨 Sentinel-2 Host Rock Classification")
+    dom = lith["dominant_lithology"]
+    pct = lith["lithology_percentages"][dom]
+    if "Mafic" in dom:
+        badge_color = "#228B22"
+    elif "Felsic" in dom:
+        badge_color = "#C71585"
+    elif "Graphitic" in dom:
+        badge_color = "#444444"
+    else:
+        badge_color = "#CC4400"
+    st.markdown(f'<div style="background:{badge_color};color:white;padding:10px;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;">Dominant Host Rock: {dom} ({pct}%)</div>', unsafe_allow_html=True)
+
+    st.markdown("**Lithology Distribution:**")
+    for name, pct_val in lith["lithology_percentages"].items():
+        st.write(f"- {name}: **{pct_val}%**")
+
+    st.markdown("**Spectral Indices (2024-2025):**")
+    idx_col1, idx_col2 = st.columns(2)
+    with idx_col1:
+        st.metric("AGDI (Amphibolite-Gneiss)", lith["agdi_val"])
+        st.metric("FSI (Ferrous Silicate)", lith["fsi_val"])
+        st.metric("FEI (Ferrous Iron 2024)", lith["fei_val"])
+    with idx_col2:
+        st.metric("NDGI (Graphite 2024)", lith["ndgi_val"])
+        st.metric("Clay/Felsic (B11/B12)", lith["clay_felsic_val"])
+        st.metric("Iron Oxide (B4/B2)", lith["iron_oxide_val"])
+
+    st.markdown("**Lithology Classification Scores:**")
+    score_col1, score_col2 = st.columns(2)
+    with score_col1:
+        st.metric("Mafic Score", f"{lith['mafic_score']:.3f}")
+        st.metric("Graphitic Score", f"{lith['graphite_score']:.3f}")
+    with score_col2:
+        st.metric("Felsic Score", f"{lith['felsic_score']:.3f}")
+        st.metric("Gossan Score", f"{lith['gossan_score']:.3f}")
+
+    st.markdown("**Lithology Maps:**")
+    map_col1, map_col2 = st.columns(2)
+    with map_col1:
+        st.markdown("**Host Rock Classification Map**")
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.imshow(lith["lithology_classified"])
+        ax.set_title("Classified Lithology", fontsize=10)
+        ax.axis("off")
+        from matplotlib.patches import Patch
+        legend_elements = [
+            Patch(facecolor=[0.2,0.6,0.2], label="Mafic (Amphibolite)"),
+            Patch(facecolor=[0.9,0.4,0.8], label="Felsic (Gneiss)"),
+            Patch(facecolor=[0.3,0.3,0.3], label="Graphitic Schist"),
+            Patch(facecolor=[0.9,0.3,0.1], label="Iron Oxide/Gossan"),
+        ]
+        ax.legend(handles=legend_elements, loc="lower right", fontsize=6, framealpha=0.8)
+        st.pyplot(fig)
+        plt.close()
+
+        st.markdown("**AGDI (Amphibolite-Gneiss Discriminator, 2025)**")
+        fig2, ax2 = plt.subplots(figsize=(6, 6))
+        im2 = ax2.imshow(lith["agdi_map"], cmap="RdYlGn_r")
+        ax2.set_title("AGDI \u2014 Low = Amphibolite, High = Gneiss", fontsize=8)
+        ax2.axis("off")
+        plt.colorbar(im2, ax=ax2, fraction=0.046, pad=0.04)
+        st.pyplot(fig2)
+        plt.close()
+
+    with map_col2:
+        st.markdown("**Lithology Composite (B12-B11-B02)**")
+        fig3, ax3 = plt.subplots(figsize=(6, 6))
+        ax3.imshow(lith["lithology_rgb"])
+        ax3.set_title("S2 Geology Composite", fontsize=10)
+        ax3.axis("off")
+        st.pyplot(fig3)
+        plt.close()
+
+        st.markdown("**Alteration Composite (Clay-Mafic-IronOxide)**")
+        fig4, ax4 = plt.subplots(figsize=(6, 6))
+        ax4.imshow(lith["alteration_rgb"])
+        ax4.set_title("Alteration/Lithology RGB", fontsize=10)
+        ax4.axis("off")
+        st.pyplot(fig4)
+        plt.close()
+
+    with st.expander("\U0001f4ca Detailed Spectral Index Maps"):
+        idx_map_col1, idx_map_col2 = st.columns(2)
+        with idx_map_col1:
+            st.markdown("**FSI (Ferrous Silicate \u2014 Mafic)**")
+            fig5, ax5 = plt.subplots(figsize=(5, 5))
+            im5 = ax5.imshow(lith["fsi_map"], cmap="YlOrRd")
+            ax5.set_title("FSI \u2014 High = Mafic/Greenstone", fontsize=8)
+            ax5.axis("off")
+            plt.colorbar(im5, ax=ax5, fraction=0.046, pad=0.04)
+            st.pyplot(fig5)
+            plt.close()
+
+            st.markdown("**NDGI (Graphite Index, 2024)**")
+            fig6, ax6 = plt.subplots(figsize=(5, 5))
+            im6 = ax6.imshow(lith["ndgi_map"], cmap="gray")
+            ax6.set_title("NDGI \u2014 High = Graphitic Schist", fontsize=8)
+            ax6.axis("off")
+            plt.colorbar(im6, ax=ax6, fraction=0.046, pad=0.04)
+            st.pyplot(fig6)
+            plt.close()
+
+        with idx_map_col2:
+            st.markdown("**FEI (Ferrous Iron Index, 2024)**")
+            fig7, ax7 = plt.subplots(figsize=(5, 5))
+            im7 = ax7.imshow(lith["fei_map"], cmap="coolwarm")
+            ax7.set_title("FEI \u2014 High = Mafic Dykes", fontsize=8)
+            ax7.axis("off")
+            plt.colorbar(im7, ax=ax7, fraction=0.046, pad=0.04)
+            st.pyplot(fig7)
+            plt.close()
+
+            st.markdown("**Clay/Felsic Index**")
+            fig8, ax8 = plt.subplots(figsize=(5, 5))
+            im8 = ax8.imshow(lith["clay_felsic_map"], cmap="YlOrBr")
+            ax8.set_title("Clay/Felsic (B11/B12)", fontsize=8)
+            ax8.axis("off")
+            plt.colorbar(im8, ax=ax8, fraction=0.046, pad=0.04)
+            st.pyplot(fig8)
+            plt.close()
+
+# Display ASTER TIR results
+tir = st.session_state.get("aster_tir_data")
+if tir:
+    st.markdown("#### \U0001f30b ASTER Thermal Infrared \u2014 Silicate Rock Indices")
+    tir_col1, tir_col2 = st.columns(2)
+    with tir_col1:
+        st.metric("Quartz Index (QI)", tir["qi_val"], help="High = quartz-rich rocks, quartz veins, silicification")
+        st.metric("Carbonate Index (CI)", tir["ci_val"], help="High = marble, limestone, carbonatite")
+        st.metric("Mafic Index (MI)", tir["mi_val"], help="High = amphibolite, basalt, gabbro")
+
+        st.markdown("**Interpretation:**")
+        if tir["qi_val"] > 1.0:
+            st.write("\U0001f7e1 High quartz content \u2014 silicification or quartz-rich host rocks")
+        if tir["mi_val"] > 1.0:
+            st.write("\U0001f7e2 High mafic content \u2014 amphibolites, greenstones, mafic dykes")
+        if tir["ci_val"] > 1.0:
+            st.write("\u26aa High carbonate content \u2014 marble, carbonatite, or carbonate alteration")
+
+    with tir_col2:
+        st.markdown("**TIR Composite (QI-CI-MI)**")
+        fig_tir, ax_tir = plt.subplots(figsize=(6, 6))
+        ax_tir.imshow(tir["tir_rgb"])
+        ax_tir.set_title("ASTER TIR Index Composite", fontsize=10)
+        ax_tir.axis("off")
+        st.pyplot(fig_tir)
+        plt.close()
+
+st.markdown("---")
 if st.button("📋 Generate Comprehensive Geological Synthesis Report",
-             use_container_width=True, type="primary"):
+         use_container_width=True, type="primary"):
     # Warn if author info is empty
     if not st.session_state.get("report_author", "").strip():
         st.warning("⚠️ Por favor preencha o campo **Prepared by** antes de gerar o relatório.", icon="⚠️")
@@ -857,40 +1145,67 @@ if st.button("📋 Generate Comprehensive Geological Synthesis Report",
 
         prompt = f"""Redija agora um PARECER TECNICO GEOLOGICO FORMAL e completo em Portugues, com base exclusivamente nos dados abaixo. NAO faca perguntas. NAO aguarde instrucoes. Escreva o parecer directamente.
 
-ESPECIALIDADE: Geologo Senior, Metalogenia do Cinturao Moambicano (Pan-African Belt, 650-500 Ma)
+    ESPECIALIDADE: Geologo Senior, Metalogenia do Cinturao Moambicano (Pan-African Belt, 650-500 Ma)
 
-CONCESSAO MINEIRA:
+    CONCESSAO MINEIRA:
 
-DADOS DO CADASTRO MINEIRO:
-- Codigo: {meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))}
-- Nome: {meta.get('Nome da Concessao', meta.get('Nome da Concessão', ''))}
-- Titular: {meta.get('Titular (Holder Company)', '')}
-- Dimensao: {meta.get('Area / Dimensao', meta.get('Área / Dimensão', ''))}
-- Validade: {meta.get('Data de Validade (Expiry)', '')}
-- Substancias: {meta.get('Substancias', meta.get('Substâncias', ''))}
-- Coordenadas: {st.session_state['map_center']}
-- Ano: {selected_year} | Commodity: {target_commodity}
+    DADOS DO CADASTRO MINEIRO:
+    - Codigo: {meta.get('Codigo da Licenca (Code)', meta.get('Código da Licença (Code)', 'N/A'))}
+    - Nome: {meta.get('Nome da Concessao', meta.get('Nome da Concessão', ''))}
+    - Titular: {meta.get('Titular (Holder Company)', '')}
+    - Dimensao: {meta.get('Area / Dimensao', meta.get('Área / Dimensão', ''))}
+    - Validade: {meta.get('Data de Validade (Expiry)', '')}
+    - Substancias: {meta.get('Substancias', meta.get('Substâncias', ''))}
+    - Coordenadas: {st.session_state['map_center']}
+    - Ano: {selected_year} | Commodity: {target_commodity}
 
-MATRIZ DE TELEMETRIA (5-WAY):
-- Oxido de Ferro: {m_data.get('Way_1_Iron_Oxide_Gossan', 2.4)}
-- Argila/Hidroxilo: {m_data.get('Way_1_Clay_Phyllic', 1.9)}
-- Densidade de Falhas: {m_data.get('Way_2_Fault_Density_Index', 0.8)}
-- Silicificacao: {m_data.get('Way_3_Silica_Flooding_Cap', 0.6)}
-- Estresse Geobotanico: {m_data.get('Way_4_Geobotanical_Stress', 0.34)}
-- WLC Score: {m_data.get('Way_5_WLC_Score_Percent', 88.5)}%
-- Satelite: {m_data.get('Satellite_Used', 'Predictive')}"""
+    MATRIZ DE TELEMETRIA (5-WAY):
+    - Oxido de Ferro: {m_data.get('Way_1_Iron_Oxide_Gossan', 2.4)}
+    - Argila/Hidroxilo: {m_data.get('Way_1_Clay_Phyllic', 1.9)}
+    - Densidade de Falhas: {m_data.get('Way_2_Fault_Density_Index', 0.8)}
+    - Silicificacao: {m_data.get('Way_3_Silica_Flooding_Cap', 0.6)}
+    - Estresse Geobotanico: {m_data.get('Way_4_Geobotanical_Stress', 0.34)}
+    - WLC Score: {m_data.get('Way_5_WLC_Score_Percent', 88.5)}%
+    - Satelite: {m_data.get('Satellite_Used', 'Predictive')}"""
 
         if sat_data:
             prompt += f"""
 
-CROSTA PCA:
-- Iron Oxide PC{sat_data.get('crosta_iron_pc',0)+1}: mean={sat_data.get('crosta_iron_mean',0)}, anomaly={sat_data.get('crosta_iron_anomaly_pct',0)}%
-- Clay PC{sat_data.get('crosta_clay_pc',0)+1}: mean={sat_data.get('crosta_clay_mean',0)}, anomaly={sat_data.get('crosta_clay_anomaly_pct',0)}%
+    CROSTA PCA:
+    - Iron Oxide PC{sat_data.get('crosta_iron_pc',0)+1}: mean={sat_data.get('crosta_iron_mean',0)}, anomaly={sat_data.get('crosta_iron_anomaly_pct',0)}%
+    - Clay PC{sat_data.get('crosta_clay_pc',0)+1}: mean={sat_data.get('crosta_clay_mean',0)}, anomaly={sat_data.get('crosta_clay_anomaly_pct',0)}%
 
-ANALISE ESTRUTURAL:
-- Densidade Lineamentos: {sat_data.get('lineament_density_val', 0)}
-- Interseccoes Alta Confianca: {sat_data.get('intersection_count', 0)}
-- Indice Densidade Interseccao: {sat_data.get('intersection_density_val', 0)}"""
+    ANALISE ESTRUTURAL:
+    - Densidade Lineamentos: {sat_data.get('lineament_density_val', 0)}
+    - Interseccoes Alta Confianca: {sat_data.get('intersection_count', 0)}
+    - Indice Densidade Interseccao: {sat_data.get('intersection_density_val', 0)}"""
+
+    
+        # Add lithology data to prompt if available
+        litho = st.session_state.get("lithology_data")
+        if litho:
+            prompt += f"""
+
+    IDENTIFICACAO DA ROCHA HOSPEDEIRA (Sentinel-2, 2024-2025):
+    - Rocha Dominante: {litho['dominant_lithology']}
+    - Distribuicao Litologica: {litho['lithology_percentages']}
+    - AGDI (Anfibolito-Gnaisse, 2025): {litho['agdi_val']}
+    - FSI (Silicato Ferroso): {litho['fsi_val']}
+    - FEI (Ferro Ferroso, 2024): {litho['fei_val']}
+    - NDGI (Grafite, 2024): {litho['ndgi_val']}
+    - Clay/Felsic (B11/B12): {litho['clay_felsic_val']}
+    - Iron Oxide (B4/B2): {litho['iron_oxide_val']}
+    - Score Mafico: {litho['mafic_score']} | Score Felsico: {litho['felsic_score']}
+    - Score Grafite: {litho['graphite_score']} | Score Gossan: {litho['gossan_score']}"""
+
+        tir_data = st.session_state.get("aster_tir_data")
+        if tir_data:
+            prompt += f"""
+
+    INDICES TIR ASTER (Silicatos, Ninomiya):
+    - Quartz Index: {tir_data['qi_val']}
+    - Carbonate Index: {tir_data['ci_val']}
+    - Mafic Index: {tir_data['mi_val']}"""
 
         if targets:
             high_c = sum(1 for t in targets if t["priority"] == "HIGH")
@@ -898,47 +1213,83 @@ ANALISE ESTRUTURAL:
             low_c  = sum(1 for t in targets if t["priority"] == "LOW")
             prompt += f"""
 
-ALVOS DE EXPLORACAO:
-Total: {len(targets)} ({high_c} Alta, {med_c} Media, {low_c} Baixa prioridade)
-{target_summary}"""
+    ALVOS DE EXPLORACAO:
+    Total: {len(targets)} ({high_c} Alta, {med_c} Media, {low_c} Baixa prioridade)
+    {target_summary}"""
 
         prompt += """
 
-INSTRUCOES DE REDACCAO:
-- Escreva directamente o parecer tecnico em Portugues. Nao inclua conversacao, confirmacoes ou frases de espera.
-- Use terminologia geologica tecnica e seja quantitativo.
-- Estruture OBRIGATORIAMENTE em 7 seccoes:
+    INSTRUCOES DE REDACCAO:
+    - Escreva o parecer tecnico COMPLETO em Portugues AGORA. Cada seccao deve ter pelo menos 2-3 paragrafos de conteudo real.
+    - PROIBIDO escrever "FIM", "Nota:", "Aguardo", ou qualquer comentario sobre o proprio texto.
+    - PROIBIDO dizer que o parecer ja foi escrito ou que nao precisa de resposta adicional.
+    - PROIBIDO repetir a mesma frase ou paragrafo. Cada seccao deve ter conteudo unico e distinto.
+    - Escreva APENAS o conteudo tecnico das 7 seccoes. Nada de conversacao, meta-comentarios, ou frases de espera.
+    - Use terminologia geologica tecnica e seja quantitativo (cite os valores numericos fornecidos acima).
+    - Estruture OBRIGATORIAMENTE em 7 seccoes, cada uma com texto substantivo:
 
-1. RESUMO EXECUTIVO
-Sintese dos dados telemetricos e prospectividade geral. Mencione a concessao e titulares.
+    1. RESUMO EXECUTIVO
+    Escreva 3 paragrafos: sintese dos dados telemetricos, prospectividade geral, e recomendacao principal. Mencione a concessao, titulares, e o WLC Score.
 
-2. CONTEXTO GEOLOGICO REGIONAL
-Enquadramento no Cinturao Pan-Africano Mocambicano. Descricao litologica e controles estruturais regionais.
+    2. CONTEXTO GEOLOGICO REGIONAL
+    Escreva 3 paragrafos: enquadramento no Cinturao Pan-Africano Mocambicano (650-500 Ma), descricao litologica, e controles estruturais regionais.
 
-3. ANALISE DE ALTERACAO HIDROTERMAL
-Interpretacao dos indices Way 1 (IO e Clay), Crosta PCA, e proxy de silicificacao. Classificacao da intensidade de alteracao.
+    3. ANALISE DE ALTERACAO HIDROTERMAL
+    Escreva 3 paragrafos: interpretacao dos indices de oxido de ferro e argila, resultados do Crosta PCA, e classificacao da intensidade de alteracao. Cite os valores numericos.
 
-4. ANALISE ESTRUTURAL
-Interpretacao de lineamentos, interseccoes de alta confianca, e orientacoes dominantes. Papel no controle da mineralizacao.
+    3.5 IDENTIFICACAO DA ROCHA HOSPEDEIRA (se dados Sentinel-2/ASTER disponiveis)
+    Escreva 2-3 paragrafos: interpretacao dos indices AGDI, FSI, FEI, NDGI, e classificacao litologica dominante. Identifique o tipo de rocha hospedeira (anfibolito, gnaisse granitico, xisto grafítico, etc.) e sua relacao com a mineralizacao aurifera. Se disponivel, interprete os indices TIR do ASTER (Quartz, Carbonate, Mafic).
 
-5. ALVOS DE EXPLORACAO PRIORIZADOS
-Tabela dos alvos de ALTA prioridade com localizacao, score, e justificacao geologica para cada um.
+    4. ANALISE ESTRUTURAL
+    Escreva 3 paragrafos: interpretacao de lineamentos, interseccoes de alta confianca, orientacoes dominantes, e o papel no controle da mineralizacao.
 
-6. RECOMENDACOES DE CAMPO (PROGRAMA DE TRABALHO)
-Fase 1: Prospeccao geoquimica (solo/rocha). Fase 2: Trincheiras. Fase 3: Sondagens. Cronograma e custos estimados.
+    5. ALVOS DE EXPLORACAO PRIORIZADOS
+    Escreva uma tabela e 2 paragrafos: liste os alvos de ALTA prioridade com localizacao, score, e justificacao geologica para cada um.
 
-7. PARECER FINAL
-Veredicto claro: PERFURAR / NAO PERFURAR / RECLASSIFICAR. Justificacao quantitativa com base no WLC Score e indices telemetricos.
+    6. RECOMENDACOES DE CAMPO (PROGRAMA DE TRABALHO)
+    Escreva 3 paragrafos: Fase 1 (prospeccao geoquimica), Fase 2 (trincheiras), Fase 3 (sondagens). Inclua cronograma e custos estimados.
 
-INICIE JA A REDACCAO DO PARECER:"""
+    7. PARECER FINAL
+    Escreva 2 paragrafos: veredicto claro (PERFURAR / NAO PERFURAR / RECLASSIFICAR) com justificacao quantitativa baseada no WLC Score e indices telemetricos.
+
+    Comece imediatamente a escrever a Secao 1. NAO escreva nada antes da Secao 1. NAO escreva "FIM" no final."""
 
         model = ModelInference(
             model_id="meta-llama/llama-3-3-70b-instruct",
             credentials=credentials,
             project_id=PROJECT_ID,
-            params={"max_new_tokens": 4000, "temperature": 0.3}
+            params={"max_new_tokens": 4000, "temperature": 0.3, "decoding_method": "greedy", "stop_sequences": ["FIM", "(NOTA"]}
         )
-        report_text = model.generate_text(prompt=prompt)
+        raw_report = model.generate_text(prompt=prompt)
+        # ── Anti-loop post-processing ──────────────────────────────────────
+        import re as _re
+
+        def _clean_report(text):
+            # 1. Cut at first occurrence of loop triggers (case-insensitive)
+            triggers = [
+                r'\nFIM DO PARECER',
+                r'\nFIM\.?\s*\n',
+                r'\nAguardo sua resposta',
+                r'\nA resposta é o parecer',
+                r'\n\(Nota:',
+                r'\n\(NOTA:',
+            ]
+            for t in triggers:
+                match = _re.search(t, text, flags=_re.IGNORECASE)
+                if match:
+                    text = text[:match.start()].strip()
+            # 2. Remove any remaining isolated FIM lines
+            text = _re.sub(r'(?m)^FIM\.?\s*$', '', text)
+            # 3. Remove (NOTA...) blocks anywhere
+            text = _re.sub(r'\(NOTA[^)]*\)', '', text, flags=_re.IGNORECASE)
+            # 4. Remove (Nota...) blocks
+            text = _re.sub(r'\(Nota[^)]*\)', '', text, flags=_re.IGNORECASE)
+            # 5. Collapse excessive blank lines
+            text = _re.sub(r'\n{3,}', '\n\n', text)
+            return text.strip()
+
+        report_text = _clean_report(raw_report)
+        st.session_state["cached_report_text"] = report_text
         st.markdown(report_text)
 
         st.markdown("---")
@@ -989,21 +1340,21 @@ INICIE JA A REDACCAO DO PARECER:"""
             st.warning(f"PDF export error: {e}")
             # Fallback: TXT with header
             header = f"""
-SATINTEL — PARECER TÉCNICO DE EXPLORAÇÃO
-==========================================
-Concessão: {conces_name}
-Licença: {lic_code}
-Data: {date_str}
+    SATINTEL — PARECER TÉCNICO DE EXPLORAÇÃO
+    ==========================================
+    Concessão: {conces_name}
+    Licença: {lic_code}
+    Data: {date_str}
 
-PREPARED BY:
-  Author:  {author}
-  Title:   {title}
-  Company: {company}
-  Lic.No:  {lic_no}
-  Ref.No:  {ref_no}
-==========================================
+    PREPARED BY:
+      Author:  {author}
+      Title:   {title}
+      Company: {company}
+      Lic.No:  {lic_no}
+      Ref.No:  {ref_no}
+    ==========================================
 
-"""
+    """
             full_text = header + report_text
             if targets:
                 full_text += "\n\n=== ALVOS DE EXPLORAÇÃO ===\n"
