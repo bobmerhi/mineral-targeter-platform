@@ -981,40 +981,53 @@ Total: {len(targets)} ({high_c} Alta, {med_c} Media, {low_c} Baixa prioridade)
         prompt += """
 
 INSTRUCOES DE REDACCAO:
-- Escreva directamente o parecer tecnico em Portugues. Nao inclua conversacao, confirmacoes ou frases de espera.
-- Use terminologia geologica tecnica e seja quantitativo.
-- Estruture OBRIGATORIAMENTE em 7 seccoes:
+- Escreva o parecer tecnico COMPLETO em Portugues AGORA. Cada seccao deve ter pelo menos 2-3 paragrafos de conteudo real.
+- PROIBIDO escrever "FIM", "Nota:", "Aguardo", ou qualquer comentario sobre o proprio texto.
+- PROIBIDO dizer que o parecer ja foi escrito ou que nao precisa de resposta adicional.
+- PROIBIDO repetir a mesma frase ou paragrafo. Cada seccao deve ter conteudo unico e distinto.
+- Escreva APENAS o conteudo tecnico das 7 seccoes. Nada de conversacao, meta-comentarios, ou frases de espera.
+- Use terminologia geologica tecnica e seja quantitativo (cite os valores numericos fornecidos acima).
+- Estruture OBRIGATORIAMENTE em 7 seccoes, cada uma com texto substantivo:
 
 1. RESUMO EXECUTIVO
-Sintese dos dados telemetricos e prospectividade geral. Mencione a concessao e titulares.
+Escreva 3 paragrafos: sintese dos dados telemetricos, prospectividade geral, e recomendacao principal. Mencione a concessao, titulares, e o WLC Score.
 
 2. CONTEXTO GEOLOGICO REGIONAL
-Enquadramento no Cinturao Pan-Africano Mocambicano. Descricao litologica e controles estruturais regionais.
+Escreva 3 paragrafos: enquadramento no Cinturao Pan-Africano Mocambicano (650-500 Ma), descricao litologica, e controles estruturais regionais.
 
 3. ANALISE DE ALTERACAO HIDROTERMAL
-Interpretacao dos indices Way 1 (IO e Clay), Crosta PCA, e proxy de silicificacao. Classificacao da intensidade de alteracao.
+Escreva 3 paragrafos: interpretacao dos indices de oxido de ferro e argila, resultados do Crosta PCA, e classificacao da intensidade de alteracao. Cite os valores numericos.
 
 4. ANALISE ESTRUTURAL
-Interpretacao de lineamentos, interseccoes de alta confianca, e orientacoes dominantes. Papel no controle da mineralizacao.
+Escreva 3 paragrafos: interpretacao de lineamentos, interseccoes de alta confianca, orientacoes dominantes, e o papel no controle da mineralizacao.
 
 5. ALVOS DE EXPLORACAO PRIORIZADOS
-Tabela dos alvos de ALTA prioridade com localizacao, score, e justificacao geologica para cada um.
+Escreva uma tabela e 2 paragrafos: liste os alvos de ALTA prioridade com localizacao, score, e justificacao geologica para cada um.
 
 6. RECOMENDACOES DE CAMPO (PROGRAMA DE TRABALHO)
-Fase 1: Prospeccao geoquimica (solo/rocha). Fase 2: Trincheiras. Fase 3: Sondagens. Cronograma e custos estimados.
+Escreva 3 paragrafos: Fase 1 (prospeccao geoquimica), Fase 2 (trincheiras), Fase 3 (sondagens). Inclua cronograma e custos estimados.
 
 7. PARECER FINAL
-Veredicto claro: PERFURAR / NAO PERFURAR / RECLASSIFICAR. Justificacao quantitativa com base no WLC Score e indices telemetricos.
+Escreva 2 paragrafos: veredicto claro (PERFURAR / NAO PERFURAR / RECLASSIFICAR) com justificacao quantitativa baseada no WLC Score e indices telemetricos.
 
-INICIE JA A REDACCAO DO PARECER:"""
+Comece imediatamente a escrever a Secao 1. NAO escreva nada antes da Secao 1. NAO escreva "FIM" no final."""
 
         model = ModelInference(
             model_id="meta-llama/llama-3-3-70b-instruct",
             credentials=credentials,
             project_id=PROJECT_ID,
-            params={"max_new_tokens": 4000, "temperature": 0.3}
+            params={"max_new_tokens": 4000, "temperature": 0.3, "decoding_method": "greedy", "stop_sequences": ["FIM", "(NOTA"]}
         )
-        report_text = model.generate_text(prompt=prompt)
+        raw_report = model.generate_text(prompt=prompt)
+        # Anti-loop post-processing: strip repetitive "FIM" / "(NOTA:" patterns
+        import re as _re
+        # Cut off at the first "FIM" or repetitive meta-commentary
+        raw_report = _re.split(r'\nFIM\n|\n\(NOTA:.*?(?:FIM|$)', raw_report, maxsplit=1)[0]
+        # Also strip trailing "FIM" and repetitive notes
+        raw_report = _re.sub(r'(FIM\s*){2,}', '', raw_report)
+        raw_report = _re.sub(r'\(NOTA:.*?(?:FIM|$)', '', raw_report, flags=_re.DOTALL)
+        raw_report = raw_report.strip()
+        report_text = raw_report
         st.markdown(report_text)
 
         st.markdown("---")
