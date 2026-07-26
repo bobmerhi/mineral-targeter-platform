@@ -5,6 +5,7 @@ Generates multi-page reports with satellite imagery, spectral indices,
 and geological analysis.
 """
 import io
+import math
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -184,149 +185,164 @@ class SatIntelPDF(FPDF):
 
 
 # Bing Maps static image fetcher (no API key needed for basic tiles via direct URL)
-import urllib.request
+import urllib.request as _urlreq
 
-def _fetch_bing_hybrid_image(lat, lon, zoom=14, size="640x640"):
-    """Fetch a Bing Maps hybrid (satellite + labels) static image.
-    Uses the public Bing Maps tile endpoint."""
+def _lat_lon_to_pixel(lat, lon, zoom):
+    """Convert lat/lon to Bing Maps pixel coordinates at given zoom."""
+    map_size = 256 * (2 ** zoom)
+    lat_rad = math.radians(lat)
+    px_x = int((lon + 180) / 360 * map_size)
+    px_y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * map_size)
+    return px_x, px_y
+
+def _pixel_to_tile(px, py):
+    return px // 256, py // 256
+
+def _tile_to_quadkey(tx, ty, zoom):
+    quadkey = ""
+    for i in range(zoom, 0, -1):
+        digit = 0
+        mask = 1 << (i - 1)
+        if (tx & mask) != 0:
+            digit += 1
+        if (ty & mask) != 0:
+            digit += 2
+        quadkey += str(digit)
+    return quadkey
+
+def _fetch_bing_tile(quadkey, tile_type="h"):
+    """Fetch a single Bing Maps tile. 'h'=hybrid(aerial+labels), 'a'=aerial only."""
     try:
-        # Bing Maps Static Imagery via the tile system
-        # We'll use the ArcGIS REST services World Imagery as fallback (also hybrid-capable)
-        # ArcGIS World Imagery + Reference layers
-        import io as _io
-
-        # Use ArcGIS World Imagery (free, no key needed)
-        # Calculate bbox from lat/lon + zoom level
-        import math
-        earth_circumference = 40075016.686
-        resolution = 156543.03 * math.cos(math.radians(lat)) / (2 ** zoom)
-        half_width_deg = (size.split('x')[0] if 'x' in str(size) else 640) * resolution / 111320 / 2
-        half_height_deg = (size.split('x')[1] if 'x' in str(size) else 640) * resolution / 111320 / 2
-
-        lon_min = lon - half_width_deg
-        lon_max = lon + half_width_deg
-        lat_min = lat - half_height_deg
-        lat_max = lat + half_height_deg
-
-        # ArcGIS World Imagery (satellite)
-        w = int(str(size).split('x')[0]) if 'x' in str(size) else 640
-        h = int(str(size).split('x')[1]) if 'x' in str(size) else 640
-
-        img_url = (
-            f"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
-            f"?f=image&bbox={lon_min},{lat_min},{lon_max},{lat_max}"
-            f"&size={w},{h}&dpi=200&format=png32&imageSR=4326&bboxSR=4326"
-        )
-        ref_url = (
-            f"https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/export"
-            f"?f=image&bbox={lon_min},{lat_min},{lon_max},{lat_max}"
-            f"&size={w},{h}&dpi=200&format=png32&imageSR=4326&bboxSR=4326&transparent=true"
-        )
-
-        # Fetch satellite image
-        req1 = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
-        img_data = urllib.request.urlopen(req1, timeout=25).read()
-
-        # Fetch reference overlay (boundaries + labels = "hybrid" look)
-        try:
-            req2 = urllib.request.Request(ref_url, headers={'User-Agent': 'Mozilla/5.0'})
-            ref_data = urllib.request.urlopen(req2, timeout=15).read()
-        except Exception:
-            ref_data = None
-
-        # Combine satellite + reference overlay
-        from PIL import Image
-        base_img = Image.open(_io.BytesIO(img_data)).convert("RGBA")
-        if ref_data:
-            ref_img = Image.open(_io.BytesIO(ref_data)).convert("RGBA")
-            base_img = Image.alpha_composite(base_img, ref_img)
-
-        # Draw the license polygon boundary on top
-        # This is done by the caller who has polygon + bbox info
-        return base_img, (lon_min, lat_min, lon_max, lat_max)
-    except Exception as e:
-        return None, None
-
-
-def _draw_polygon_on_image(img, polygon, img_bbox, img_size=(640, 640)):
-    """Draw license polygon boundary on the satellite image."""
-    from PIL import ImageDraw
-    import io as _io
-
-    if img is None or polygon is None or img_bbox is None:
-        return img
-
-    lon_min, lat_min, lon_max, lat_max = img_bbox
-    w, h = img_size
-
-    # Convert polygon coordinates to pixel coordinates
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-
-    for ring in polygon.get("geometry", {}).get("coordinates", []):
-        pixels = []
-        for p in ring:
-            px = int((p[0] - lon_min) / (lon_max - lon_min) * w)
-            py = int((lat_max - p[1]) / (lat_max - lat_min) * h)
-            pixels.append((px, py))
-        if len(pixels) >= 2:
-            # Draw bright yellow boundary line
-            draw.line(pixels + [pixels[0]], fill=(255, 215, 0, 255), width=3)
-
-    return Image.alpha_composite(img, overlay)
-
+        sub = int(quadkey[-1]) % 4 if quadkey else 0
+        url = f"https://ecn.t{sub}.tiles.virtualearth.net/tiles/{tile_type}{quadkey}.jpeg?g=14245"
+        req = _urlreq.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        return _urlreq.urlopen(req, timeout=15).read()
+    except Exception:
+        return None
 
 def _make_bing_cover_image(polygon, fetch_bbox, map_center, targets=None):
-    """Create a hybrid satellite cover image with license boundary overlay."""
+    """Create a Bing Maps hybrid satellite cover image with license boundary overlay."""
     try:
+        from PIL import Image, ImageDraw
+        import io as _io
+
         lat = map_center[0] if map_center else -19.0
         lon = map_center[1] if map_center else 33.0
 
-        # Determine zoom based on concession size
         if fetch_bbox:
+            clat = (fetch_bbox[1] + fetch_bbox[3]) / 2
+            clon = (fetch_bbox[0] + fetch_bbox[2]) / 2
             lon_range = fetch_bbox[2] - fetch_bbox[0]
             lat_range = fetch_bbox[3] - fetch_bbox[1]
             max_range = max(lon_range, lat_range)
             if max_range > 1.0:
-                zoom = 10
+                zoom = 9
             elif max_range > 0.5:
-                zoom = 11
+                zoom = 10
             elif max_range > 0.2:
-                zoom = 12
+                zoom = 11
             elif max_range > 0.1:
+                zoom = 12
+            elif max_range > 0.05:
                 zoom = 13
             else:
                 zoom = 14
+            lat = clat
+            lon = clon
         else:
-            zoom = 13
+            zoom = 12
 
-        img, img_bbox = _fetch_bing_hybrid_image(lat, lon, zoom=zoom, size="800x600")
-        if img is None:
-            return None
+        margin = 0.15
+        span = max(fetch_bbox[2] - fetch_bbox[0], fetch_bbox[3] - fetch_bbox[1]) * (1 + margin) if fetch_bbox else 0.2
+        half_span = span / 2
+        bbox_lon_min = lon - half_span
+        bbox_lon_max = lon + half_span
+        bbox_lat_min = lat - half_span * 0.75
+        bbox_lat_max = lat + half_span * 0.75
 
-        # Draw the license polygon boundary
+        px_x1, py_y1 = _lat_lon_to_pixel(bbox_lat_max, bbox_lon_min, zoom)
+        px_x2, py_y2 = _lat_lon_to_pixel(bbox_lat_min, bbox_lon_max, zoom)
+        tx1, ty1 = _pixel_to_tile(px_x1, py_y1)
+        tx2, ty2 = _pixel_to_tile(px_x2, py_y2)
+        tiles_x = tx2 - tx1 + 1
+        tiles_y = ty2 - ty1 + 1
+
+        if tiles_x * tiles_y > 16:
+            zoom -= 1
+            px_x1, py_y1 = _lat_lon_to_pixel(bbox_lat_max, bbox_lon_min, zoom)
+            px_x2, py_y2 = _lat_lon_to_pixel(bbox_lat_min, bbox_lon_max, zoom)
+            tx1, ty1 = _pixel_to_tile(px_x1, py_y1)
+            tx2, ty2 = _pixel_to_tile(px_x2, py_y2)
+            tiles_x = tx2 - tx1 + 1
+            tiles_y = ty2 - ty1 + 1
+
+        canvas_w = tiles_x * 256
+        canvas_h = tiles_y * 256
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (10, 10, 10))
+
+        for ty_idx in range(tiles_y):
+            for tx_idx in range(tiles_x):
+                tx = tx1 + tx_idx
+                ty = ty1 + ty_idx
+                qk = _tile_to_quadkey(tx, ty, zoom)
+                tile_data = _fetch_bing_tile(qk, "h")
+                if tile_data is None:
+                    tile_data = _fetch_bing_tile(qk, "a")
+                if tile_data:
+                    tile_img = Image.open(_io.BytesIO(tile_data)).convert("RGB")
+                    canvas.paste(tile_img, (tx_idx * 256, ty_idx * 256))
+
+        # Crop to bbox
+        offset_x = px_x1 - tx1 * 256
+        offset_y = py_y1 - ty1 * 256
+        crop_w = min(px_x2 - px_x1, canvas_w - offset_x)
+        crop_h = min(py_y2 - py_y1, canvas_h - offset_y)
+        if crop_w > 0 and crop_h > 0:
+            canvas = canvas.crop((offset_x, offset_y, offset_x + crop_w, offset_y + crop_h))
+
+        # Resize for PDF
+        target_w = 800
+        if canvas.width > target_w:
+            ratio = target_w / canvas.width
+            canvas = canvas.resize((target_w, int(canvas.height * ratio)), Image.LANCZOS)
+
+        # Draw license polygon boundary
         if polygon:
-            img = _draw_polygon_on_image(img, polygon, img_bbox, img_size=(800, 600))
-
-        # Draw targets as red circles
-        if targets and img_bbox:
-            from PIL import ImageDraw
-            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(overlay)
-            lon_min, lat_min, lon_max, lat_max = img_bbox
-            w, h = 800, 600
+            w, h = canvas.size
+            for ring in polygon.get("geometry", {}).get("coordinates", []):
+                pixels = []
+                for p in ring:
+                    px = int((p[0] - bbox_lon_min) / (bbox_lon_max - bbox_lon_min) * w)
+                    py = int((bbox_lat_max - p[1]) / (bbox_lat_max - bbox_lat_min) * h)
+                    pixels.append((px, py))
+                if len(pixels) >= 2:
+                    draw.line(pixels + [pixels[0]], fill=(255, 215, 0, 255), width=4)
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
+
+        # Draw targets
+        if targets:
+            overlay2 = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            draw2 = ImageDraw.Draw(overlay2)
+            w, h = canvas.size
             for t in targets:
                 tlon, tlat = t.get("lon", 0), t.get("lat", 0)
-                px = int((tlon - lon_min) / (lon_max - lon_min) * w)
-                py = int((lat_max - tlat) / (lat_max - lat_min) * h)
+                px = int((tlon - bbox_lon_min) / (bbox_lon_max - bbox_lon_min) * w)
+                py = int((bbox_lat_max - tlat) / (bbox_lat_max - bbox_lat_min) * h)
                 r = 8
-                color = (255, 50, 50, 255) if t.get("priority") == "HIGH" else (255, 165, 0, 255) if t.get("priority") == "MEDIUM" else (50, 200, 50, 255)
-                draw.ellipse([px-r, py-r, px+r, py+r], fill=color, outline=(255, 255, 255, 255), width=2)
-            img = Image.alpha_composite(img, overlay)
+                pri = t.get("priority", "LOW")
+                if pri == "HIGH":
+                    color = (255, 50, 50, 255)
+                elif pri == "MEDIUM":
+                    color = (255, 165, 0, 255)
+                else:
+                    color = (50, 200, 50, 255)
+                draw2.ellipse([px-r, py-r, px+r, py+r], fill=color, outline=(255, 255, 255, 255), width=2)
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay2).convert("RGB")
 
-        # Convert to bytes for PDF insertion
         buf = _io.BytesIO()
-        img.convert("RGB").save(buf, format="PNG", dpi=(200, 200))
+        canvas.save(buf, format="PNG", dpi=(200, 200))
         buf.seek(0)
         return buf
     except Exception:
