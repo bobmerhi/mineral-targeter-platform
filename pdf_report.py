@@ -131,6 +131,8 @@ class SatIntelPDF(FPDF):
         super().__init__()
         self.author_name = ""
         self.report_title = "SatIntel Report"
+        self.set_margins(15, 15, 15)  # Left, Top, Right margins = 15mm
+        self.set_auto_page_break(True, 20)  # Auto page break with 20mm bottom margin
         self.add_font('DejaVu', '', FONT_REGULAR)
         self.add_font('DejaVu', 'B', FONT_BOLD)
         self.add_font('DejaVuMono', '', FONT_MONO)
@@ -145,7 +147,7 @@ class SatIntelPDF(FPDF):
         self.set_text_color(*COLOR_MEDIUM_GRAY)
         self.cell(0, 6, self.report_title, 0, 1, 'L')
         self.set_draw_color(180, 180, 180)
-        self.line(10, 18, 200, 18)
+        self.line(15, 18, 195, 18)
         self.ln(4)
 
     def footer(self):
@@ -178,6 +180,157 @@ class SatIntelPDF(FPDF):
         self.set_font('DejaVu', '', 9)
         self.set_text_color(*COLOR_DARK_GRAY)
         self.cell(0, 5, str(value), 0, 1)
+
+
+
+# Bing Maps static image fetcher (no API key needed for basic tiles via direct URL)
+import urllib.request
+
+def _fetch_bing_hybrid_image(lat, lon, zoom=14, size="640x640"):
+    """Fetch a Bing Maps hybrid (satellite + labels) static image.
+    Uses the public Bing Maps tile endpoint."""
+    try:
+        # Bing Maps Static Imagery via the tile system
+        # We'll use the ArcGIS REST services World Imagery as fallback (also hybrid-capable)
+        # ArcGIS World Imagery + Reference layers
+        import io as _io
+
+        # Use ArcGIS World Imagery (free, no key needed)
+        # Calculate bbox from lat/lon + zoom level
+        import math
+        earth_circumference = 40075016.686
+        resolution = 156543.03 * math.cos(math.radians(lat)) / (2 ** zoom)
+        half_width_deg = (size.split('x')[0] if 'x' in str(size) else 640) * resolution / 111320 / 2
+        half_height_deg = (size.split('x')[1] if 'x' in str(size) else 640) * resolution / 111320 / 2
+
+        lon_min = lon - half_width_deg
+        lon_max = lon + half_width_deg
+        lat_min = lat - half_height_deg
+        lat_max = lat + half_height_deg
+
+        # ArcGIS World Imagery (satellite)
+        w = int(str(size).split('x')[0]) if 'x' in str(size) else 640
+        h = int(str(size).split('x')[1]) if 'x' in str(size) else 640
+
+        img_url = (
+            f"https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export"
+            f"?f=image&bbox={lon_min},{lat_min},{lon_max},{lat_max}"
+            f"&size={w},{h}&dpi=200&format=png32&imageSR=4326&bboxSR=4326"
+        )
+        ref_url = (
+            f"https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/export"
+            f"?f=image&bbox={lon_min},{lat_min},{lon_max},{lat_max}"
+            f"&size={w},{h}&dpi=200&format=png32&imageSR=4326&bboxSR=4326&transparent=true"
+        )
+
+        # Fetch satellite image
+        req1 = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
+        img_data = urllib.request.urlopen(req1, timeout=25).read()
+
+        # Fetch reference overlay (boundaries + labels = "hybrid" look)
+        try:
+            req2 = urllib.request.Request(ref_url, headers={'User-Agent': 'Mozilla/5.0'})
+            ref_data = urllib.request.urlopen(req2, timeout=15).read()
+        except Exception:
+            ref_data = None
+
+        # Combine satellite + reference overlay
+        from PIL import Image
+        base_img = Image.open(_io.BytesIO(img_data)).convert("RGBA")
+        if ref_data:
+            ref_img = Image.open(_io.BytesIO(ref_data)).convert("RGBA")
+            base_img = Image.alpha_composite(base_img, ref_img)
+
+        # Draw the license polygon boundary on top
+        # This is done by the caller who has polygon + bbox info
+        return base_img, (lon_min, lat_min, lon_max, lat_max)
+    except Exception as e:
+        return None, None
+
+
+def _draw_polygon_on_image(img, polygon, img_bbox, img_size=(640, 640)):
+    """Draw license polygon boundary on the satellite image."""
+    from PIL import ImageDraw
+    import io as _io
+
+    if img is None or polygon is None or img_bbox is None:
+        return img
+
+    lon_min, lat_min, lon_max, lat_max = img_bbox
+    w, h = img_size
+
+    # Convert polygon coordinates to pixel coordinates
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    for ring in polygon.get("geometry", {}).get("coordinates", []):
+        pixels = []
+        for p in ring:
+            px = int((p[0] - lon_min) / (lon_max - lon_min) * w)
+            py = int((lat_max - p[1]) / (lat_max - lat_min) * h)
+            pixels.append((px, py))
+        if len(pixels) >= 2:
+            # Draw bright yellow boundary line
+            draw.line(pixels + [pixels[0]], fill=(255, 215, 0, 255), width=3)
+
+    return Image.alpha_composite(img, overlay)
+
+
+def _make_bing_cover_image(polygon, fetch_bbox, map_center, targets=None):
+    """Create a hybrid satellite cover image with license boundary overlay."""
+    try:
+        lat = map_center[0] if map_center else -19.0
+        lon = map_center[1] if map_center else 33.0
+
+        # Determine zoom based on concession size
+        if fetch_bbox:
+            lon_range = fetch_bbox[2] - fetch_bbox[0]
+            lat_range = fetch_bbox[3] - fetch_bbox[1]
+            max_range = max(lon_range, lat_range)
+            if max_range > 1.0:
+                zoom = 10
+            elif max_range > 0.5:
+                zoom = 11
+            elif max_range > 0.2:
+                zoom = 12
+            elif max_range > 0.1:
+                zoom = 13
+            else:
+                zoom = 14
+        else:
+            zoom = 13
+
+        img, img_bbox = _fetch_bing_hybrid_image(lat, lon, zoom=zoom, size="800x600")
+        if img is None:
+            return None
+
+        # Draw the license polygon boundary
+        if polygon:
+            img = _draw_polygon_on_image(img, polygon, img_bbox, img_size=(800, 600))
+
+        # Draw targets as red circles
+        if targets and img_bbox:
+            from PIL import ImageDraw
+            overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(overlay)
+            lon_min, lat_min, lon_max, lat_max = img_bbox
+            w, h = 800, 600
+            for t in targets:
+                tlon, tlat = t.get("lon", 0), t.get("lat", 0)
+                px = int((tlon - lon_min) / (lon_max - lon_min) * w)
+                py = int((lat_max - tlat) / (lat_max - lat_min) * h)
+                r = 8
+                color = (255, 50, 50, 255) if t.get("priority") == "HIGH" else (255, 165, 0, 255) if t.get("priority") == "MEDIUM" else (50, 200, 50, 255)
+                draw.ellipse([px-r, py-r, px+r, py+r], fill=color, outline=(255, 255, 255, 255), width=2)
+            img = Image.alpha_composite(img, overlay)
+
+        # Convert to bytes for PDF insertion
+        buf = _io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG", dpi=(200, 200))
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
 
 
 def generate_professional_report(
@@ -216,7 +369,17 @@ def generate_professional_report(
     pdf.cell(0, 5, classification, 0, 1, 'C')
 
     pdf.ln(3)
-    if sat_data:
+    # ── Cover image: Bing/ArcGIS hybrid satellite with license boundary ──
+    hybrid_img = _make_bing_cover_image(polygon, fetch_bbox, map_center, targets)
+    if hybrid_img:
+        img_w = 175
+        x_center = (210 - img_w) / 2
+        pdf.image(hybrid_img, x=x_center, w=img_w)
+        pdf.set_font('DejaVu', '', 7)
+        pdf.set_text_color(*COLOR_MEDIUM_GRAY)
+        pdf.ln(2)
+        pdf.cell(0, 4, "Imagem Híbrida (Satélite + Limites) — ArcGIS World Imagery | Fronteira da Concessão a Amarelo", 0, 1, 'C')
+    elif sat_data:
         sat_img = _make_index_image(
             sat_data.get("rgb"), title="Landsat Natural Color Composite",
             polygon=polygon, fetch_bbox=fetch_bbox, targets=targets)
@@ -266,11 +429,11 @@ def generate_professional_report(
             pdf.set_fill_color(*COLOR_WHITE)
         pdf.set_text_color(*COLOR_DARK_GREEN)
         pdf.set_font('DejaVu', 'B', 8)
-        pdf.cell(45, 5, label, border=0, fill=True)
+        pdf.cell(42, 5, label, border=0, fill=True)
         pdf.set_font('DejaVu', '', 8)
         pdf.set_text_color(*COLOR_DARK_GRAY)
-        val_str = str(value)[:80]
-        pdf.cell(145, 5, val_str, border=0, fill=True, new_x="LMARGIN", new_y="NEXT")
+        val_str = str(value)[:75]
+        pdf.cell(138, 5, val_str, border=0, fill=True, new_x="LMARGIN", new_y="NEXT")
 
     pdf.ln(3)
     pdf._section_header("RESPONSÁVEL TÉCNICO")
@@ -293,7 +456,7 @@ def generate_professional_report(
     pdf.ln(2)
     pdf.set_font('DejaVu', 'I', 7)
     pdf.set_text_color(*COLOR_MEDIUM_GRAY)
-    pdf.multi_cell(190, 4,
+    pdf.multi_cell(180, 4,
         "Este documento foi gerado pelo SatIntel AI utilizando dados Landsat (USGS/NASA) e IBM watsonx.ai. "
         "O conteúdo técnico deve ser validado por trabalho de campo antes da tomada de decisão.")
 
@@ -381,7 +544,7 @@ def generate_professional_report(
             pdf._section_header("INTERPRETAÇÃO GEOLÓGICA", COLOR_DARK_GREEN)
             pdf.set_font('DejaVu', '', 9)
             pdf.set_text_color(*COLOR_DARK_GRAY)
-            pdf.multi_cell(190, 5, idx_def["explanation"])
+            pdf.multi_cell(180, 5, idx_def["explanation"])
 
             if key == "crosta_iron_pca":
                 loadings = sat_data.get("crosta_iron_loadings", {})
@@ -420,21 +583,21 @@ def generate_professional_report(
                 pdf.ln(3)
                 pdf.set_font('DejaVu', 'B', 12)
                 pdf.set_text_color(*COLOR_DARK_GREEN)
-                pdf.multi_cell(190, 6, stripped)
+                pdf.multi_cell(180, 6, stripped)
                 pdf.set_text_color(*COLOR_DARK_GRAY)
                 pdf.ln(1)
             elif stripped.startswith("- ") or stripped.startswith("* "):
                 pdf.set_font('DejaVu', '', 9)
                 pdf.set_text_color(*COLOR_DARK_GRAY)
-                pdf.multi_cell(190, 5, "  • " + stripped[2:])
+                pdf.multi_cell(180, 5, "  • " + stripped[2:])
             elif "|" in stripped and stripped.count("|") >= 2:
                 pdf.set_font('DejaVuMono', '', 8)
                 pdf.set_text_color(*COLOR_DARK_GRAY)
-                pdf.multi_cell(190, 5, stripped)
+                pdf.multi_cell(180, 5, stripped)
             else:
                 pdf.set_font('DejaVu', '', 9)
                 pdf.set_text_color(*COLOR_DARK_GRAY)
-                pdf.multi_cell(190, 5, stripped)
+                pdf.multi_cell(180, 5, stripped)
 
     # === TARGETS SUMMARY ===
     if targets:
@@ -442,7 +605,7 @@ def generate_professional_report(
         pdf._section_header("RESUMO DE ALVOS DE EXPLORAÇÃO", COLOR_DARK_GREEN)
         pdf.set_font('DejaVu', '', 9)
         pdf.set_text_color(*COLOR_DARK_GRAY)
-        pdf.multi_cell(190, 5,
+        pdf.multi_cell(180, 5,
             "Composite score: IO(0.20) + CLAY(0.20) + Structural(0.15) + "
             "Geomorphology(0.30) + Lineament(0.15)")
         pdf.ln(3)
@@ -504,8 +667,8 @@ def generate_professional_report(
             pdf.cell(0, 4, f"    Lat: {t['lat']:.4f}, Lon: {t['lon']:.4f} | Raio: ~{t['radius_m']}m", 0, 1)
             pdf.set_font('DejaVu', '', 7)
             pdf.set_text_color(*COLOR_DARK_GRAY)
-            pdf.multi_cell(190, 4, f"    EN: {t['description_en']}")
-            pdf.multi_cell(190, 4, f"    PT: {t['description_pt']}")
+            pdf.multi_cell(180, 4, f"    EN: {t['description_en']}")
+            pdf.multi_cell(180, 4, f"    PT: {t['description_pt']}")
             pdf.set_font('DejaVuMono', '', 6)
             pdf.set_text_color(*COLOR_MEDIUM_GRAY)
             pdf.cell(0, 4, f"    IO={t['io_score']} Clay={t['clay_score']} Struct={t['struct_score']} Geo={t['geomorph_score']} Line={t['line_score']}", 0, 1)
@@ -536,7 +699,7 @@ def generate_professional_report(
     pdf.ln(10)
     pdf.set_font('DejaVu', 'I', 7)
     pdf.set_text_color(*COLOR_MEDIUM_GRAY)
-    pdf.multi_cell(190, 4,
+    pdf.multi_cell(180, 4,
         "DISCLAIMER: Este relatório foi gerado automaticamente pela plataforma SatIntel AI "
         "utilizando dados Landsat (USGS/NASA) processados com Crosta PCA, filtragem Sobel direcional, "
         "e análise de componentes principais. O parecer técnico foi gerado pelo modelo IBM watsonx.ai "

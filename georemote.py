@@ -170,6 +170,8 @@ def _query_arcgis_layer(token, layer_id, license_code):
         "where": f"Code = '{license_code}'",
         "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,Jurisdic,Region,DteApplied,DteGranted,DteExpires,AreaValue,AreaUnit,Commodities",
         "returnGeometry": "true", "outSR": "4326",
+        "resultRecordCount": 10,
+        "resultOffset": 0,
     }
     resp = requests.get(url, params=params, timeout=15, verify=False)
     return resp.json().get("features", [])
@@ -1058,6 +1060,8 @@ def search_cadastre_by_name(search_term):
                 "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,AreaValue,AreaUnit,Commodities,DteExpires",
                 "returnGeometry": "false",
                 "outSR": "4326",
+                "resultRecordCount": 50,
+                "resultOffset": 0,
             }
             resp = requests.get(url, params=params, timeout=20, verify=False)
             features = resp.json().get("features", [])
