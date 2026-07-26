@@ -210,21 +210,25 @@ def get_real_mozambique_cadastre(license_id):
             return _hardcoded_11521()
         return {"found": False}
 
-    for layer_id in MINING_LAYERS:
-        try:
-            features = _query_arcgis_layer(token, layer_id, clean_id)
-            if features:
-                return _build_result(features[0], clean_id)
-        except Exception:
-            continue
+    # Server only accepts plain numeric codes (e.g. "11521", not "11521CM")
+    # Try plain code and also strip any letter suffixes
+    codes_to_try = [clean_id]
+    # Strip trailing letters if present (e.g. "11521CM" -> "11521")
+    # use top-level re module
+    stripped = _re_code.sub(r'[A-Za-z]+$', '', clean_id).strip()
+    if stripped and stripped != clean_id:
+        codes_to_try.insert(0, stripped)
 
-    for layer_id in MINING_LAYERS:
-        try:
-            features = _query_arcgis_layer(token, layer_id, f"{clean_id}CM")
-            if features:
-                return _build_result(features[0], clean_id)
-        except Exception:
-            continue
+    # Layer 4 is the most complete; try it first, then fallback to others
+    layers_ordered = [4] + [l for l in MINING_LAYERS if l != 4]
+    for code_attempt in codes_to_try:
+        for layer_id in layers_ordered:
+            try:
+                features = _query_arcgis_layer(token, layer_id, code_attempt)
+                if features:
+                    return _build_result(features[0], clean_id)
+            except Exception:
+                continue
 
     if clean_id == "11521":
         return _hardcoded_11521()
@@ -1033,54 +1037,78 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
 # NAME-BASED CADASTRE SEARCH
 # ========================================================
 
-def search_cadastre_by_name(search_term):
+def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
     """
-    Search INAMI cadastre by license name or holder name.
+    Search INAMI cadastre by license name or holder/party name.
+    The INAMI ArcGIS server does NOT support LIKE queries, so we use
+    returnIdsOnly + batch OID queries and filter in-memory.
     Returns a list of matching concessions with summary info.
     """
-    requests = _get_requests()
+    requests_lib = _get_requests()
     token = _get_arcgis_token()
     if not token:
         return []
 
-    search_term = search_term.strip()
-    # Escape single quotes for ArcGIS query
-    safe_term = search_term.replace("'", "''")
-    where_clause = f"(Name LIKE '%{safe_term}%' OR Parties LIKE '%{safe_term}%')"
+    search_lower = search_term.strip().lower()
+    if not search_lower:
+        return []
 
+    # Layer 4 "Licenses" is the most complete layer
+    url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/4/query"
+
+    # Step 1: Get all object IDs
+    try:
+        id_resp = requests_lib.get(url, params={
+            "f": "json", "token": token,
+            "where": "1=1", "returnGeometry": "false", "returnIdsOnly": "true"
+        }, timeout=20, verify=False)
+        all_oids = id_resp.json().get("objectIds", [])
+    except Exception:
+        return []
+
+    if not all_oids:
+        return []
+
+    # Step 2: Paginate through OIDs in batches, filter in-memory
+    BATCH = 200
     results = []
     seen_codes = set()
 
-    for layer_id in MINING_LAYERS:
+    for i in range(0, len(all_oids), BATCH):
+        if len(results) >= max_results:
+            break
+        if progress_cb:
+            progress_cb(i, len(all_oids))
+        batch = all_oids[i:i + BATCH]
         try:
-            url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/{layer_id}/query"
-            params = {
+            resp = requests_lib.get(url, params={
                 "f": "json", "token": token,
-                "where": where_clause,
-                "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,AreaValue,AreaUnit,Commodities,DteExpires",
+                "objectIds": ",".join(str(o) for o in batch),
+                "outFields": "Code,Name,Parties,Status,Type,AreaValue,AreaUnit,Commodities,DteExpires",
                 "returnGeometry": "false",
-                "outSR": "4326",
-                "resultRecordCount": 50,
-                "resultOffset": 0,
-            }
-            resp = requests.get(url, params=params, timeout=20, verify=False)
-            features = resp.json().get("features", [])
-            for feat in features:
+            }, timeout=25, verify=False)
+            for feat in resp.json().get("features", []):
                 attrs = feat.get("attributes", {})
                 code = str(attrs.get("Code", ""))
                 if code in seen_codes:
                     continue
-                seen_codes.add(code)
-                results.append({
-                    "code": code,
-                    "name": str(attrs.get("Name", "N/A")),
-                    "holder": str(attrs.get("Parties", "N/A")),
-                    "status": str(attrs.get("Status", "N/A")),
-                    "type": str(attrs.get("Type", "N/A")),
-                    "area": f"{attrs.get('AreaValue', 0):,.2f} {attrs.get('AreaUnit', 'Ha')}",
-                    "commodities": str(attrs.get("Commodities", "N/A")),
-                    "expiry": _arcgis_date_to_str(attrs.get("DteExpires")),
-                })
+                name_val = str(attrs.get("Name", "") or "")
+                parties_val = str(attrs.get("Parties", "") or "")
+                combined = (name_val + " " + parties_val).lower()
+                if search_lower in combined:
+                    seen_codes.add(code)
+                    results.append({
+                        "code": code,
+                        "name": name_val or code,
+                        "holder": parties_val or "N/A",
+                        "status": str(attrs.get("Status", "N/A")),
+                        "type": str(attrs.get("Type", "N/A")),
+                        "area": f"{attrs.get('AreaValue', 0) or 0:,.2f} {attrs.get('AreaUnit', 'Ha') or 'Ha'}",
+                        "commodities": str(attrs.get("Commodities", "N/A") or "N/A"),
+                        "expiry": _arcgis_date_to_str(attrs.get("DteExpires")),
+                    })
+                    if len(results) >= max_results:
+                        break
         except Exception:
             continue
 
