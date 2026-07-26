@@ -756,7 +756,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
     with rc1:
         report_author = st.text_input(
             "Prepared by (Nome do Responsavel)*",
-            value=st.session_state.get("report_author", ""),
+            value=st.session_state.get("report_author", "Mr. Issufo Vali"),
             placeholder="e.g., Eng. Yasser Abu baker",
             key="form_author"
         )
@@ -816,7 +816,7 @@ with st.expander("📋 Report Author & Professional Information", expanded=True)
             "Tecnico - Informativo",
             "Preliminar - Nao Revisado",
         ]
-        saved_classif = st.session_state.get("report_classification", "Confidencial - Uso Interno")
+        saved_classif = st.session_state.get("report_classification", "Restrito - Cliente")
         classif_idx = classif_options.index(saved_classif) if saved_classif in classif_options else 0
         report_classification = st.selectbox(
             "Document Classification", classif_options,
