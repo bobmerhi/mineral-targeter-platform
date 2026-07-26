@@ -126,6 +126,7 @@ DEFAULTS = {
     "last_license": "",
     "name_search_results": None,
     "name_search_term": "",
+    "cached_report_text": "",
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -1019,15 +1020,35 @@ Comece imediatamente a escrever a Secao 1. NAO escreva nada antes da Secao 1. NA
             params={"max_new_tokens": 4000, "temperature": 0.3, "decoding_method": "greedy", "stop_sequences": ["FIM", "(NOTA"]}
         )
         raw_report = model.generate_text(prompt=prompt)
-        # Anti-loop post-processing: strip repetitive "FIM" / "(NOTA:" patterns
+        # ── Anti-loop post-processing ──────────────────────────────────────
         import re as _re
-        # Cut off at the first "FIM" or repetitive meta-commentary
-        raw_report = _re.split(r'\nFIM\n|\n\(NOTA:.*?(?:FIM|$)', raw_report, maxsplit=1)[0]
-        # Also strip trailing "FIM" and repetitive notes
-        raw_report = _re.sub(r'(FIM\s*){2,}', '', raw_report)
-        raw_report = _re.sub(r'\(NOTA:.*?(?:FIM|$)', '', raw_report, flags=_re.DOTALL)
-        raw_report = raw_report.strip()
-        report_text = raw_report
+
+        def _clean_report(text):
+            # 1. Cut at first occurrence of loop triggers (case-insensitive)
+            triggers = [
+                r'\nFIM DO PARECER',
+                r'\nFIM\.?\s*\n',
+                r'\nAguardo sua resposta',
+                r'\nA resposta é o parecer',
+                r'\n\(Nota:',
+                r'\n\(NOTA:',
+            ]
+            for t in triggers:
+                match = _re.search(t, text, flags=_re.IGNORECASE)
+                if match:
+                    text = text[:match.start()].strip()
+            # 2. Remove any remaining isolated FIM lines
+            text = _re.sub(r'(?m)^FIM\.?\s*$', '', text)
+            # 3. Remove (NOTA...) blocks anywhere
+            text = _re.sub(r'\(NOTA[^)]*\)', '', text, flags=_re.IGNORECASE)
+            # 4. Remove (Nota...) blocks
+            text = _re.sub(r'\(Nota[^)]*\)', '', text, flags=_re.IGNORECASE)
+            # 5. Collapse excessive blank lines
+            text = _re.sub(r'\n{3,}', '\n\n', text)
+            return text.strip()
+
+        report_text = _clean_report(raw_report)
+        st.session_state["cached_report_text"] = report_text
         st.markdown(report_text)
 
         st.markdown("---")
