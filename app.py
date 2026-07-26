@@ -206,9 +206,19 @@ elif search_method == "(b) License Name Search":
     name_search_clicked = st.sidebar.button("Search by Name", type="primary", use_container_width=True)
 
     if name_search_clicked and name_input.strip():
-        with st.sidebar.status("Searching INAMI cadastre by name...", expanded=True) as name_status:
-            st.write("Querying Landfolio portal...")
-            results = search_cadastre_by_name(name_input.strip())
+        with st.sidebar.status("Scanning 14,800+ INAMI licenses...", expanded=True) as name_status:
+            st.write("Getting all license IDs from Landfolio...")
+            _progress_bar = st.progress(0)
+            _progress_text = st.empty()
+
+            def _name_progress_cb(i, total):
+                pct = int(i / total * 100) if total > 0 else 0
+                _progress_bar.progress(pct)
+                _progress_text.caption(f"Scanned {i:,} / {total:,} records…")
+
+            results = search_cadastre_by_name(name_input.strip(), progress_cb=_name_progress_cb)
+            _progress_bar.progress(100)
+            _progress_text.empty()
             if results:
                 st.session_state["name_search_results"] = results
                 st.session_state["name_search_term"] = name_input.strip()
