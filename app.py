@@ -522,23 +522,26 @@ with col2:
                         steps.append("Generating exploration target zones...")
                         log.markdown("\n".join(f"✅ {s}" for s in steps))
                         
-                        st.session_state["satellite_data"]      = result
-                        st.session_state["exploration_targets"] = generate_exploration_targets(
-                            result, 
-                            polygon_geojson=st.session_state.get("active_polygon"),
-                            target_commodity=target_commodity
-                        )
-                        st.session_state["m_data"] = {
-                            "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
-                            "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
-                            "Way_2_Fault_Density_Index": result["Way_2_Fault_Density_Index"],
-                            "Way_3_Silica_Flooding_Cap": result["Way_3_Silica_Flooding_Cap"],
-                            "Way_4_Geobotanical_Stress": result["Way_4_Geobotanical_Stress"],
-                            "Way_5_WLC_Score_Percent":   result["Way_5_WLC_Score_Percent"],
-                            "Satellite_Used":            result["Satellite_Used"],
-                            "_is_predictive":            False,
-                        }
-                        status.update(label="✅ Satellite analysis complete!", state="complete", expanded=False)
+            st.session_state["satellite_data"] = result
+            
+            # Generate targets using the selected commodity from sidebar
+            st.session_state["exploration_targets"] = generate_exploration_targets(
+                result, 
+                polygon_geojson=st.session_state.get("active_polygon"),
+                target_commodity=target_commodity
+            )
+            
+            st.session_state["m_data"] = {
+                "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
+                "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
+                "Way_2_Fault_Density_Index": result["Way_2_Fault_Density_Index"],
+                "Way_3_Silica_Flooding_Cap": result["Way_3_Silica_Flooding_Cap"],
+                "Way_4_Geobotanical_Stress": result["Way_4_Geobotanical_Stress"],
+                "Way_5_WLC_Score_Percent":   result["Way_5_WLC_Score_Percent"],
+                "Satellite_Used":            result["Satellite_Used"],
+                "_is_predictive":            False,
+            }                        
+        status.update(label="✅ Satellite analysis complete!", state="complete", expanded=False)
                         st.rerun()
                     except Exception as e:
                         status.update(label=f"❌ Fetch failed — showing predictive values", state="error")
