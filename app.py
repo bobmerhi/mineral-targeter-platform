@@ -474,7 +474,7 @@ with col2:
             on_click=lambda: st.session_state.update({"fetch_running": True})
         )
 
-             # ── ACTUAL FETCH EXECUTION ────────────────────────────────────────────
+            # ── ACTUAL FETCH EXECUTION ────────────────────────────────────────────
             if st.session_state["fetch_running"] and sat_data is None:
                 st.session_state["fetch_running"] = False   # reset flag immediately
                 with st.status("🛰️ Fetching satellite data & computing spectral indices...", expanded=True) as status:
@@ -516,7 +516,7 @@ with col2:
                                 steps.append("✓ ASTER copper indices merged")
                                 log.markdown("\n".join(f"✅ {s}" for s in steps))
                             else:
-                                steps.append(" ASTER copper indices unavailable (no scene)")
+                                steps.append("⚠ ASTER copper indices unavailable (no scene)")
                                 log.markdown("\n".join(f"✅ {s}" for s in steps))
                         
                         steps.append("Generating exploration target zones...")
@@ -548,8 +548,7 @@ with col2:
                         )
                         st.session_state["m_data"]["_is_predictive"] = True
                         st.session_state["satellite_data"]      = None
-                        st.session_state["exploration_targets"] = None
-    # ── 5-WAY METRICS DISPLAY ─────────────────────────────────────────────
+                        st.session_state["exploration_targets"] = None    # ── 5-WAY METRICS DISPLAY ─────────────────────────────────────────────
     if m_data:
         source_tag = "Predictive Model" if is_predictive else "Real Landsat Satellite"
         st.caption(f"Source: **{source_tag}** | {m_data.get('Satellite_Used', '')}")
