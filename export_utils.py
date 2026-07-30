@@ -237,6 +237,85 @@ def create_targets_kmz(targets, polygon_geojson=None, metadata=None, sat_data=No
     - Folders: License Boundary, High/Medium/Low Priority Targets
     - Color-coded polygons with bilingual descriptions
     - Composite scores, structural controls, lithology
+    - Auto-detects commodity (Copper vs Gold) for correct WLC formula display
+    """
+    fetch_bbox = sat_data.get("fetch_bbox") if sat_data else None
+    scene_date = sat_data.get("scene_date", "") if sat_data else ""
+    satellite = sat_data.get("Satellite_Used", "") if sat_data else ""
+
+    # Group targets by priority
+    high = [t for t in targets if t["priority"] == "HIGH"]
+    medium = [t for t in targets if t["priority"] == "MEDIUM"]
+    low = [t for t in targets if t["priority"] == "LOW"]
+
+    # Build license boundary folder
+    boundary_folder = ""
+    if polygon_geojson:
+        boundary_folder = (
+            '  <Folder>\n'
+            '    <name>License Boundary / Limite da Licenca</name>\n'
+            + _boundary_placemark(polygon_geojson, metadata) + '\n'
+            '  </Folder>'
+        )
+
+    def build_priority_folder(name, target_list):
+        if not target_list:
+            return ""
+        placemarks = "\n".join(_target_placemark(t) for t in target_list)
+        return (
+            f'  <Folder>\n'
+            f'    <name>{name}</name>\n'
+            f'{placemarks}\n'
+            f'  </Folder>'
+        )
+
+    high_folder = build_priority_folder("High Priority Targets / Alvos de Alta Prioridade", high)
+    med_folder = build_priority_folder("Medium Priority Targets / Alvos de Media Prioridade", medium)
+    low_folder = build_priority_folder("Low Priority Targets / Alvos de Baixa Prioridade", low)
+
+    # Assemble folders
+    folders = "\n".join(f for f in [boundary_folder, high_folder, med_folder, low_folder] if f)
+
+    # AUTO-DETECT COMMODITY AND WRITE CORRECT WLC FORMULA
+    is_copper = any("[COPPER]" in t.get("description_en", "") for t in targets)
+
+    if is_copper:
+        desc_text = (
+            f"Copper-target zones. Composite score: "
+            f"IO(0.25) + CLAY(0.20) + Structural(0.20) + Geomorphology(0.15) + Lineament(0.10) + ASTER_CuProxy(0.10). "
+            f"Scene: {scene_date}. Source: {satellite}."
+        )
+    else:
+        desc_text = (
+            f"Gold-target zones. Composite score: "
+            f"IO(0.20) + CLAY(0.20) + Structural(0.15) + Geomorphology(0.30) + Lineament(0.15). "
+            f"Scene: {scene_date}. Source: {satellite}."
+        )
+
+    kml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
+        '<Document>\n'
+        f'  <name>SatIntel Exploration Targets</name>\n'
+        f'  <description>{escape(desc_text)}</description>\n'
+        f'{_STYLE_HIGH}\n'
+        f'{_STYLE_MED}\n'
+        f'{_STYLE_LOW}\n'
+        f'{_STYLE_BOUNDARY}\n'
+        f'{folders}\n'
+        '</Document>\n'
+        '</kml>'
+    )
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("doc.kml", kml)
+    buf.seek(0)
+    return buf.getvalue()    """
+    Create a professional exploration targets KMZ file matching the reference format:
+    - Folders: License Boundary, High/Medium/Low Priority Targets
+    - Color-coded polygons with bilingual descriptions
+    - Composite scores, structural controls, lithology
     """
     fetch_bbox = sat_data.get("fetch_bbox") if sat_data else None
     scene_date = sat_data.get("scene_date", "") if sat_data else ""
