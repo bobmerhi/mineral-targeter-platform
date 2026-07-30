@@ -510,8 +510,8 @@ with col2:
                 log.markdown("\n".join(f"✅ {s}" for s in steps))
 
                 st.session_state["satellite_data"]      = result
-                st.session_state["exploration_targets"] = generate_exploration_targets(result, polygon_geojson=st.session_state.get("active_polygon"))
-                st.session_state["m_data"] = {
+st.session_state["exploration_targets"] = generate_exploration_targets(result,polygon_geojson=st.session_state.get("active_polygon"),target_commodity=target_commodity  # ← Connects sidebar selection to WLC formula
+)                st.session_state["m_data"] = {
                     "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
                     "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
                     "Way_2_Fault_Density_Index": result["Way_2_Fault_Density_Index"],
