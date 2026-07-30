@@ -490,69 +490,68 @@ with col2:
                         ax.imshow(img, cmap=cmap, aspect="auto") if cmap else ax.imshow(img, aspect="auto")
                         ax.set_title(title, fontsize=9, fontweight="bold"); ax.axis("off")
                         st.pyplot(fig, use_container_width=True); plt.close(fig)
-                    try:
-                        lat, lon = st.session_state["map_center"]
-                        active_poly = st.session_state.get("active_polygon")
-                        poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
-                        
-                        result = fetch_satellite_imagery(
-                            lat, lon, selected_year,
-                            bbox=poly_bbox,
-                            progress_cb=progress_cb,
-                            preview_cb=preview_cb
-                        )
-                        
-                        # ★ COPPER: Fetch ASTER SWIR indices when commodity is copper ★
-                        if target_commodity and "copper" in str(target_commodity).lower():
-                            steps.append("Fetching ASTER SWIR copper indices...")
-                            log.markdown("\n".join(f"✅ {s}" for s in steps))
-                            aster_cu = fetch_aster_copper_indices(
-                                lat, lon, selected_year, 
-                                bbox=poly_bbox, 
-                                progress_cb=progress_cb
-                            )
-                            if aster_cu:
-                                result.update(aster_cu)  # Merge ASTER copper indices into sat_data
-                                steps.append("✓ ASTER copper indices merged")
-                                log.markdown("\n".join(f"✅ {s}" for s in steps))
-                            else:
-                                steps.append("⚠ ASTER copper indices unavailable (no scene)")
-                                log.markdown("\n".join(f"✅ {s}" for s in steps))
-                        
-                        steps.append("Generating exploration target zones...")
+                 try:
+                    lat, lon = st.session_state["map_center"]
+                    active_poly = st.session_state.get("active_polygon")
+                    poly_bbox = polygon_to_bbox(active_poly) if active_poly else None
+                    
+                    result = fetch_satellite_imagery(
+                        lat, lon, selected_year,
+                        bbox=poly_bbox,
+                        progress_cb=progress_cb,
+                        preview_cb=preview_cb
+                    )
+                    
+                    # ★ COPPER: Fetch ASTER SWIR indices when commodity is copper ★
+                    if target_commodity and "copper" in str(target_commodity).lower():
+                        steps.append("Fetching ASTER SWIR copper indices...")
                         log.markdown("\n".join(f"✅ {s}" for s in steps))
-                        
-            st.session_state["satellite_data"] = result
-            
-            # Generate targets using the selected commodity from sidebar
-            st.session_state["exploration_targets"] = generate_exploration_targets(
-                result, 
-                polygon_geojson=st.session_state.get("active_polygon"),
-                target_commodity=target_commodity
-            )
-            
-            st.session_state["m_data"] = {
-                "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
-                "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
-                "Way_2_Fault_Density_Index": result["Way_2_Fault_Density_Index"],
-                "Way_3_Silica_Flooding_Cap": result["Way_3_Silica_Flooding_Cap"],
-                "Way_4_Geobotanical_Stress": result["Way_4_Geobotanical_Stress"],
-                "Way_5_WLC_Score_Percent":   result["Way_5_WLC_Score_Percent"],
-                "Satellite_Used":            result["Satellite_Used"],
-                "_is_predictive":            False,
-            }                        
-        status.update(label="✅ Satellite analysis complete!", state="complete", expanded=False)
-                        st.rerun()
-                    except Exception as e:
-                        status.update(label=f"❌ Fetch failed — showing predictive values", state="error")
-                        st.error(f"Error: {str(e)[:300]}")
-                        st.session_state["m_data"] = fetch_and_calculate_spatz(
-                            st.session_state["map_center"], None, selected_year
+                        aster_cu = fetch_aster_copper_indices(
+                            lat, lon, selected_year, 
+                            bbox=poly_bbox, 
+                            progress_cb=progress_cb
                         )
-                        st.session_state["m_data"]["_is_predictive"] = True
-                        st.session_state["satellite_data"]      = None
-                        st.session_state["exploration_targets"] = None    # ── 5-WAY METRICS DISPLAY ─────────────────────────────────────────────
-    if m_data:
+                        if aster_cu:
+                            result.update(aster_cu)
+                            steps.append("✓ ASTER copper indices merged")
+                            log.markdown("\n".join(f"✅ {s}" for s in steps))
+                        else:
+                            steps.append(" ASTER copper indices unavailable (no scene)")
+                            log.markdown("\n".join(f"✅ {s}" for s in steps))
+                    
+                    steps.append("Generating exploration target zones...")
+                    log.markdown("\n".join(f"✅ {s}" for s in steps))
+                    
+                    # ── CORRECTLY INDENTED INSIDE TRY BLOCK ──────────────
+                    st.session_state["satellite_data"] = result
+                    st.session_state["exploration_targets"] = generate_exploration_targets(
+                        result, 
+                        polygon_geojson=st.session_state.get("active_polygon"),
+                        target_commodity=target_commodity
+                    )
+                    st.session_state["m_data"] = {
+                        "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
+                        "Way_1_Clay_Phyllic":       result["Way_1_Clay_Phyllic"],
+                        "Way_2_Fault_Density_Index": result["Way_2_Fault_Density_Index"],
+                        "Way_3_Silica_Flooding_Cap": result["Way_3_Silica_Flooding_Cap"],
+                        "Way_4_Geobotanical_Stress": result["Way_4_Geobotanical_Stress"],
+                        "Way_5_WLC_Score_Percent":   result["Way_5_WLC_Score_Percent"],
+                        "Satellite_Used":            result["Satellite_Used"],
+                        "_is_predictive":            False,
+                    }
+                    status.update(label="✅ Satellite analysis complete!", state="complete", expanded=False)
+                    st.rerun()
+                    
+                except Exception as e:
+                    status.update(label=f"❌ Fetch failed — showing predictive values", state="error")
+                    st.error(f"Error: {str(e)[:300]}")
+                    st.session_state["m_data"] = fetch_and_calculate_spatz(
+                        st.session_state["map_center"], None, selected_year
+                    )
+                    st.session_state["m_data"]["_is_predictive"] = True
+                    st.session_state["satellite_data"]      = None
+                    st.session_state["exploration_targets"] = None
+                    if m_data:
         source_tag = "Predictive Model" if is_predictive else "Real Landsat Satellite"
         st.caption(f"Source: **{source_tag}** | {m_data.get('Satellite_Used', '')}")
 
