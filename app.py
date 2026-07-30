@@ -23,6 +23,14 @@ try:
         get_real_mozambique_cadastre,
         search_cadastre_by_name,
         fetch_satellite_imagery,
+    if target_commodity and "copper" in str(target_commodity).lower():
+    aster_cu = fetch_aster_copper_indices(
+        lat, lon, selected_year, 
+        bbox=poly_bbox, 
+        progress_cb=progress_cb
+    )
+    if aster_cu:
+        result.update(aster_cu)  # Merge ASTER copper indices into sat_data
         fetch_sentinel2_lithology,
         fetch_aster_tir_indices,
         polygon_to_bbox,
