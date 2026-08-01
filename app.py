@@ -786,6 +786,12 @@ Line = {t['line_score']}  &nbsp;| &nbsp;
 
 # ── EXPORTS ──────────────────────────────────────────────────────────
 st.markdown("---")
+# ── Ensure variables are defined for export section ──
+active_poly = st.session_state.get("active_polygon")
+sat_data = st.session_state.get("satellite_data")
+targets = st.session_state.get("exploration_targets")
+fetch_bbox = sat_data.get("fetch_bbox") if sat_data else None
+
 st.markdown("## 📥 Export & Google Earth Integration")
 license_code = st.session_state["concession_metadata"].get(
     "Codigo da Licenca (Code)",
