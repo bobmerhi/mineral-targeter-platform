@@ -27,6 +27,8 @@ try:
         fetch_aster_tir_indices,
         polygon_to_bbox,
         generate_exploration_targets,
+        fetch_aster_swir_gold_indices,
+        generate_epithermal_targets,
     )
 except Exception as _georemote_err:
     import traceback as _tb
@@ -149,6 +151,8 @@ DEFAULTS = {
     "satellite_data": None,
     "m_data": None,          # None = no data yet; dict = predictive or real
     "exploration_targets": None,
+    "epithermal_targets": None,
+    "epithermal_data": None,
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
     "name_search_results": None,
@@ -859,6 +863,121 @@ with exp2_c2:
         st.download_button("🖼️ Export Images (PNG ZIP)", data=png_bytes,
             file_name=f"satintel_images_{sat_data.get('scene_date','')}.zip",
             mime="application/zip", use_container_width=True)
+
+
+# ================================================================
+# PHASE 2: EPITHERMAL GOLD ACTIVATION (ASTER SWIR)
+# Based on: White & Hedenquist (1995), Pour & Hashim (2012)
+# ================================================================
+st.markdown("---")
+st.markdown("## Phase 2: Epithermal Gold Activation (ASTER SWIR)")
+
+sat_data_p2 = st.session_state.get("satellite_data")
+m_data_p2 = st.session_state.get("m_data")
+
+if sat_data_p2 and m_data_p2:
+    ep_col1, ep_col2 = st.columns([2, 1])
+    
+    with ep_col2:
+        epithermal_year = st.number_input(
+            "ASTER Scene Year",
+            min_value=2000, max_value=2026, value=2024,
+            help="Year to search for ASTER L1T scenes (cloud cover < 20%)"
+        )
+        max_ep_targets = st.slider("Max Epithermal Targets", 3, 25, 12)
+    
+    with ep_col1:
+        if st.button("Activate Epithermal Analysis", type="primary", use_container_width=True):
+            ep_progress = st.empty()
+            ep_status = st.empty()
+            
+            def _ep_cb(msg):
+                ep_status.text(msg)
+            
+            with st.spinner("Fetching ASTER SWIR data for epithermal indicators..."):
+                lat_c = m_data_p2.get("centroid_lat", m_data_p2.get("lat"))
+                lon_c = m_data_p2.get("centroid_lon", m_data_p2.get("lon"))
+                fetch_bbox_p2 = sat_data_p2.get("fetch_bbox")
+                
+                ep_result = fetch_aster_swir_gold_indices(
+                    lat_c, lon_c, int(epithermal_year),
+                    bbox=fetch_bbox_p2, progress_cb=_ep_cb
+                )
+            
+            if ep_result.get("status") == "option_b_required":
+                st.warning("No free ASTER data available for this location/year.")
+                st.info(
+                    f"**Paid Upgrade Path Available**\n"
+                    f"- Method: {ep_result.get('upgrade_path', 'hyperspectral_pima')}\n"
+                    f"- Free accuracy: {ep_result.get('accuracy_free', 'N/A')}\n"
+                    f"- Paid accuracy: {ep_result.get('accuracy_paid', 'N/A')}\n"
+                    f"- Cost estimate: ${ep_result.get('cost_estimate_usd', 1200)}\n"
+                    f"- Delivery: {ep_result.get('delivery_weeks', 3)} weeks"
+                )
+            elif ep_result.get("status") == "error":
+                st.error(f"ASTER fetch error: {ep_result.get('reason', 'Unknown')}")
+            elif ep_result.get("status") == "success":
+                st.success(f"ASTER scene: {ep_result.get('scene_id', '?')} (cloud: {ep_result.get('cloud_cover', 0):.1f}%)")
+                
+                # Merge epithermal indices into sat_data for target generation
+                sat_data_ep = {**sat_data_p2, **{
+                    "alunite_map": ep_result["alunite_map"],
+                    "kaolinite_map": ep_result["kaolinite_map"],
+                    "sericite_map": ep_result["sericite_map"],
+                    "quartz_proxy_map": ep_result["quartz_proxy_map"],
+                }}
+                
+                with st.spinner("Generating epithermal targets (White & Hedenquist 1995 WLC)..."):
+                    active_poly_p2 = st.session_state.get("active_polygon")
+                    ep_targets = generate_epithermal_targets(
+                        sat_data_ep, max_targets=max_ep_targets,
+                        polygon_geojson=active_poly_p2
+                    )
+                
+                if ep_targets:
+                    st.session_state["epithermal_targets"] = ep_targets
+                    st.session_state["epithermal_data"] = ep_result
+                    
+                    # Show mineral index values
+                    idx_col1, idx_col2, idx_col3, idx_col4 = st.columns(4)
+                    with idx_col1:
+                        st.metric("Alunite (HS)", ep_result.get("alunite_val", 0))
+                    with idx_col2:
+                        st.metric("Kaolinite", ep_result.get("kaolinite_val", 0))
+                    with idx_col3:
+                        st.metric("Sericite (LS)", ep_result.get("sericite_val", 0))
+                    with idx_col4:
+                        st.metric("Quartz Proxy", ep_result.get("quartz_proxy_val", 0))
+                    
+                    st.info(f"Generated **{len(ep_targets)}** epithermal targets")
+                else:
+                    st.warning("No epithermal targets found in this area.")
+    
+    # Display epithermal targets if available
+    ep_targets_display = st.session_state.get("epithermal_targets")
+    if ep_targets_display:
+        st.markdown("### Epithermal Target Zones")
+        
+        for t in ep_targets_display:
+            style_color = "🔴" if "High" in t["structural_control"] else ("🔵" if "Low" in t["structural_control"] else "🟡")
+            with st.expander(f"{style_color} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
+                tc1, tc2, tc3 = st.columns(3)
+                with tc1:
+                    st.metric("Alunite", t["alunite_score"])
+                    st.metric("Kaolinite", t["kaolinite_score"])
+                with tc2:
+                    st.metric("Sericite", t["sericite_score"])
+                    st.metric("Quartz Proxy", t["quartz_score"])
+                with tc3:
+                    st.metric("Structural", t["struct_score"])
+                    st.metric("Radius (m)", t["radius_m"])
+                
+                st.markdown(f"**Lithology:** {t['lithology']}")
+                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
+                st.markdown(f"**EN:** {t['description_en']}")
+                st.caption(f"**PT:** {t['description_pt']}")
+else:
+    st.info("Run Phase 1 satellite analysis first to enable epithermal activation.")
 
 # ================================================================
 # IBM WATSONX GEOLOGICAL REPORT

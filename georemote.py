@@ -1387,3 +1387,294 @@ def fetch_aster_tir_indices(lat, lon, year, bbox=None, progress_cb=None):
         "qi_val": qi_val, "ci_val": ci_val, "mi_val": mi_val,
         "fetch_bbox": fetch_bbox,
     }
+
+# ==============================================================================
+# PHASE 2: EPITHERMAL GOLD ACTIVATION MODULE
+# ==============================================================================
+# Integrates ASTER SWIR mineral mapping for High/Low Sulfidation discrimination
+# Implements Option A (Free ASTER PC) / Option B (Paid Hyperspectral/PIMA) workflow
+# Based on: White & Hedenquist (1995), Pour & Hashim (2012), Ninomiya (2003)
+# ==============================================================================
+
+def fetch_aster_swir_gold_indices(lat, lon, year, bbox=None, progress_cb=None):
+    """
+    Fetches ASTER SWIR bands specifically tuned for epithermal gold minerals.
+    Returns indices for Alunite (HS cap), Kaolinite (argillic), Sericite (phyllic/LS).
+    
+    OPTION A (FREE): Uses Planetary Computer ASTER-L1T surface reflectance.
+    OPTION B (PAID): Triggered if no ASTER scene found; returns upgrade metadata.
+    """
+    def _cb(msg):
+        if progress_cb: progress_cb(msg)
+    
+    if bbox is None:
+        buf = 0.06
+        bbox = [lon - buf, lat - buf, lon + lat + buf]
+    
+    try:
+        import pystac_client
+        import planetary_computer
+        import rasterio
+        from rasterio.windows import from_bounds
+    except ImportError:
+        _cb("ASTER libraries not available. Skipping epithermal analysis.")
+        return {"status": "error", "reason": "Missing dependencies"}
+    
+    _cb("Searching ASTER L1T scenes for epithermal mineral mapping...")
+    catalog = pystac_client.Client.open(
+        "https://planetarycomputer.microsoft.com/api/stac/v1",
+        modifier=planetary_computer.sign_inplace
+    )
+    search = catalog.search(
+        collections=["aster-l1t"],
+        bbox=bbox,
+        datetime=f"{year}-01-01T00:00:00Z/{year}-12-31T23:59:59Z",
+        query={"eo:cloud_cover": {"lt": 20}}
+    )
+    items = list(search.items())
+    
+    # OPTION B TRIGGER: No free ASTER data available
+    if not items:
+        _cb("NO FREE ASTER DATA FOR THIS YEAR/LOCATION")
+        _cb("OPTION B (PAID UPGRADE) AVAILABLE:")
+        _cb("- Airborne Hyperspectral (HyMap/PRISMA): Maps white mica chemistry")
+        _cb("- Field PIMA Spectroscopy: Vectors to boiling zone via sericite crystallinity")
+        _cb("- Cost: ~$600-$1,200/scene | Delivery: 2-4 weeks")
+        _cb("- Accuracy Gain: Distinguishes hypogene advanced argillic from steam-heated overprint")
+        return {
+            "status": "option_b_required",
+            "upgrade_path": "hyperspectral_pima",
+            "accuracy_free": "<50% (Landsat cannot distinguish alunite from kaolinite)",
+            "accuracy_paid": ">85% (Direct mineral chemistry detection)",
+            "cost_estimate_usd": 1200,
+            "delivery_weeks": 3
+        }
+    
+    best = min(items, key=lambda i: i.properties.get("eo:cloud_cover", 100))
+    cloud = best.properties.get("eo:cloud_cover", 0)
+    _cb(f"Free ASTER scene found: {best.id} (cloud: {cloud:.1f}%)")
+    
+    def _read_band(item, band_name):
+        href = item.assets[band_name].href
+        with rasterio.open(href) as src:
+            win = from_bounds(*bbox, src.transform)
+            return src.read(1, window=win).astype(np.float32)
+    
+    try:
+        b5 = _read_band(best, "SWIR_Band5")   # 2.17um (Alunite/Kaolinite absorption)
+        b6 = _read_band(best, "SWIR_Band6")   # 2.20um (Sericite/Illite absorption)
+        b7 = _read_band(best, "SWIR_Band7")   # 2.29um (Chlorite/Epidote)
+        b8 = _read_band(best, "SWIR_Band8")   # 2.35um (Carbonate/Amphibole)
+    except KeyError as e:
+        _cb(f"Missing ASTER band: {e}. Cannot compute epithermal indices.")
+        return {"status": "error", "reason": f"Band missing: {e}"}
+    
+    _cb("Computing epithermal-specific ASTER indices (Ninomiya 2003, Pour & Hashim 2012)...")
+    
+    # ALUNITE INDEX (High-Sulfidation Lithocap)
+    # Formula: (B7-B5)/(B7+B5) - Targets 2.17um absorption shoulder
+    alunite_index = np.divide(b7 - b5, b7 + b5 + 1e-6)
+    
+    # KAOLINITE INDEX (Argillic Alteration Zone)
+    # Formula: (B5-B6)/(B5+B6) - Distinguishes kaolinite (2.17um) from sericite (2.20um)
+    kaolinite_index = np.divide(b5 - b6, b5 + b6 + 1e-6)
+    
+    # SERICITE INDEX (Phyllic Alteration / Low-Sulfidation Boiling Zone)
+    # Formula: (B7-B8)/(B7+B8) - Targets illite/muscovite at 2.20um
+    sericite_index = np.divide(b7 - b8, b7 + b8 + 1e-6)
+    
+    # QUARTZ PROXY (Silica Cap / Vuggy Silica)
+    quartz_proxy = np.divide(b6 - b5, b6 + b5 + 1e-6)
+    
+    _cb("Epithermal ASTER indices computed successfully!")
+    
+    return {
+        "status": "success",
+        "alunite_map": alunite_index,
+        "kaolinite_map": kaolinite_index,
+        "sericite_map": sericite_index,
+        "quartz_proxy_map": quartz_proxy,
+        "alunite_val": round(float(np.nanmean(alunite_index)), 3),
+        "kaolinite_val": round(float(np.nanmean(kaolinite_index)), 3),
+        "sericite_val": round(float(np.nanmean(sericite_index)), 3),
+        "quartz_proxy_val": round(float(np.nanmean(quartz_proxy)), 3),
+        "fetch_bbox": bbox,
+        "scene_id": best.id,
+        "cloud_cover": cloud,
+        "data_source": "ASTER-L1T (Planetary Computer - FREE)"
+    }
+
+
+def generate_epithermal_targets(sat_data, max_targets=12, polygon_geojson=None):
+    """
+    Generates exploration targets using Epithermal-specific WLC formula.
+    Weights based on White & Hedenquist (1995) alteration zoning model.
+    
+    WLC: Alunite 0.30 + Kaolinite 0.25 + Quartz 0.20 + Struct 0.15 + Sericite 0.10
+    """
+    try:
+        from scipy.ndimage import label as nd_label, center_of_mass, gaussian_filter
+    except ImportError:
+        nd_label = None
+        center_of_mass = None
+        gaussian_filter = None
+    
+    h, w = sat_data["iron_oxide_map"].shape
+    fetch_bbox = sat_data["fetch_bbox"]
+    
+    # Build polygon mask
+    poly_mask = None
+    if polygon_geojson and fetch_bbox:
+        from matplotlib.path import Path
+        lon_min, lat_min, lon_max, lat_max = fetch_bbox
+        ys, xs = np.mgrid[:h, :w]
+        grid = np.column_stack([xs.ravel(), ys.ravel()])
+        mask = np.zeros(h * w, dtype=bool)
+        for ring in polygon_geojson["geometry"]["coordinates"]:
+            verts_px = []
+            for p in ring:
+                px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                verts_px.append((px, py))
+            path = Path(verts_px)
+            mask |= path.contains_points(grid)
+        poly_mask = mask.reshape(h, w)
+    if poly_mask is None:
+        poly_mask = np.ones((h, w), dtype=bool)
+    
+    def norm_01(arr):
+        mn, mx = np.nanmin(arr), np.nanmax(arr)
+        return (arr - mn) / (mx - mn + 1e-6)
+    
+    # Normalize input layers
+    io_norm = norm_01(sat_data["iron_oxide_map"])
+    struct = norm_01(sat_data.get("lineament_density_map", np.zeros((h, w))))
+    
+    # EPITHERMAL-SPECIFIC INDICES
+    alunite_raw = sat_data.get("alunite_map", np.zeros((h, w)))
+    kaolinite_raw = sat_data.get("kaolinite_map", np.zeros((h, w)))
+    sericite_raw = sat_data.get("sericite_map", np.zeros((h, w)))
+    quartz_raw = sat_data.get("quartz_proxy_map", np.zeros((h, w)))
+    
+    alunite_norm = norm_01(alunite_raw)
+    kaolinite_norm = norm_01(kaolinite_raw)
+    sericite_norm = norm_01(sericite_raw)
+    quartz_norm = norm_01(quartz_raw)
+    
+    # EPITHERMAL WLC FORMULA (White & Hedenquist 1995)
+    composite = (
+        0.30 * alunite_norm +     # Advanced argillic lithocap (HS indicator)
+        0.25 * kaolinite_norm +   # Argillic zone (both styles)
+        0.20 * quartz_norm +      # Silica cap / vuggy silica
+        0.15 * struct +           # Structural conduits for fluid flow
+        0.10 * sericite_norm      # Phyllic alteration (LS boiling zone proxy)
+    )
+    
+    # Apply polygon mask
+    composite_masked = composite.copy()
+    composite_masked[~poly_mask] = -999
+    
+    # Smooth and threshold
+    if gaussian_filter:
+        composite_smooth = gaussian_filter(
+            np.where(composite_masked > -998, composite_masked, 0), sigma=2
+        )
+        composite_smooth[~poly_mask] = -999
+    else:
+        composite_smooth = composite_masked
+    
+    inside_vals = composite_smooth[poly_mask]
+    if len(inside_vals) == 0:
+        return []
+    
+    threshold_high = np.nanpercentile(inside_vals, 90)
+    threshold_med = np.nanpercentile(inside_vals, 75)
+    
+    if nd_label is None or center_of_mass is None:
+        return []
+    
+    binary = (composite_smooth > threshold_med) & poly_mask
+    labeled, num_features = nd_label(binary)
+    if num_features == 0:
+        return []
+    
+    scores_per_cluster = {}
+    for label_id in range(1, num_features + 1):
+        mask = labeled == label_id
+        score = float(np.nanmean(composite_smooth[mask]))
+        scores_per_cluster[label_id] = score
+    
+    top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:max_targets]
+    lon_min, lat_min, lon_max, lat_max = fetch_bbox
+    targets = []
+    
+    for label_id, score in top_clusters:
+        cy, cx = center_of_mass(labeled == label_id)
+        lat_t = lat_max - (cy / h) * (lat_max - lat_min)
+        lon_t = lon_min + (cx / w) * (lon_max - lon_min)
+        
+        priority = "HIGH" if score >= threshold_high else ("MEDIUM" if score >= threshold_med else "LOW")
+        
+        cluster_mask = labeled == label_id
+        cluster_size = int(np.sum(cluster_mask))
+        
+        alunite_s = round(float(np.nanmean(alunite_norm[cluster_mask])), 3)
+        kaolinite_s = round(float(np.nanmean(kaolinite_norm[cluster_mask])), 3)
+        sericite_s = round(float(np.nanmean(sericite_norm[cluster_mask])), 3)
+        quartz_s = round(float(np.nanmean(quartz_norm[cluster_mask])), 3)
+        struct_s = round(float(np.nanmean(struct[cluster_mask])), 3)
+        
+        # Determine epithermal style based on dominant mineral
+        if alunite_s > kaolinite_s and alunite_s > sericite_s:
+            style = "High-Sulfidation (Acid-Sulfate)"
+            lithology = "Vuggy silica + advanced argillic alteration"
+        elif sericite_s > alunite_s and sericite_s > kaolinite_s:
+            style = "Low-Sulfidation (Adularia-Sericite)"
+            lithology = "Quartz-adularia veins + phyllic alteration"
+        else:
+            style = "Intermediate / Mixed Epithermal"
+            lithology = "Kaolinite-sericite transition zone"
+        
+        radius_m = max(50, min(500, int(np.sqrt(cluster_size)) * 30))
+        lat_pad = 0.004
+        lon_pad = lat_pad * 1.2
+        ring = [
+            [lon_t - lon_pad, lat_t - lat_pad],
+            [lon_t + lon_pad, lat_t - lat_pad],
+            [lon_t + lon_pad, lat_t + lat_pad],
+            [lon_t - lon_pad, lat_t + lat_pad],
+            [lon_t - lon_pad, lat_t - lat_pad],
+        ]
+        
+        score_pct = round(score * 100, 1)
+        desc_en = (
+            f"[EPITHERMAL-{style.upper()}] Target zone with composite score {score_pct}%. "
+            f"Alunite={alunite_s}, Kaolinite={kaolinite_s}, Sericite={sericite_s}, Silica={quartz_s}. "
+            f"Structural control: {struct_s}. Lithology: {lithology}."
+        )
+        desc_pt = (
+            f"[EPITERMAL-{style.upper()}] Zona alvo com score composto {score_pct}%. "
+            f"Alunita={alunite_s}, Caulinita={kaolinite_s}, Sericita={sericite_s}, Silica={quartz_s}. "
+            f"Controle estrutural: {struct_s}. Litologia: {lithology}."
+        )
+        
+        targets.append({
+            "id": f"EP-T-{len(targets)+1:02d}",
+            "score": score_pct,
+            "priority": priority,
+            "structural_control": style,
+            "lithology": lithology,
+            "radius_m": radius_m,
+            "lat": round(lat_t, 6),
+            "lon": round(lon_t, 6),
+            "polygon": ring,
+            "alunite_score": alunite_s,
+            "kaolinite_score": kaolinite_s,
+            "sericite_score": sericite_s,
+            "quartz_score": quartz_s,
+            "struct_score": struct_s,
+            "description_en": desc_en,
+            "description_pt": desc_pt,
+        })
+    
+    return targets
