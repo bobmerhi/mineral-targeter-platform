@@ -844,6 +844,7 @@ if targets:
 st.markdown("---")
 exp2_c1, exp2_c2 = st.columns(2)
 with exp2_c1:
+    geotiff_bytes = None
     if sat_data:
         geotiff_bytes = create_geotiff_bundle(sat_data, fetch_bbox=fetch_bbox)
         if geotiff_bytes:
@@ -851,6 +852,7 @@ with exp2_c1:
                 file_name=f"satintel_geotiffs_{sat_data.get('scene_date','')}.zip",
                 mime="application/zip", use_container_width=True)
 with exp2_c2:
+    png_bytes = None
     if sat_data:
         png_bytes = create_png_bundle(sat_data)
     if png_bytes:

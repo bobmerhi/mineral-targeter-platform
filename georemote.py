@@ -109,10 +109,31 @@ def _get_band_url_from_feature(feature, band_keys, sas_token):
 # ================================================================
 # INAMI / LANDFOLIO CADASTRE API
 # ================================================================
-def _get_arcgis_token():
+def _get_arcgis_token(service_name="Licenses_Mining"):
+    """Fetch ArcGIS token from the Landfolio portal HTML.
+    
+    The portal embeds per-service tokens in escaped JSON config blocks.
+    Format changed from ArcGISToken":"..." to ArcGISToken\":\"...\" (escaped quotes).
+    """
     try:
         requests = _get_requests()
-        resp = requests.get(LANDFOLIO_PORTAL_URL, timeout=15, verify=False)
+        resp = requests.get(LANDFOLIO_PORTAL_URL, timeout=15, verify=False,
+            headers={"User-Agent": "Mozilla/5.0"})
+        
+        # Try escaped-quote pattern (current Landfolio format)
+        if service_name:
+            # Find the token for the specific service (e.g., Licenses_Mining)
+            pattern = service_name + r'[^}]*ArcGISToken\\":\\"([^"\\]+)'
+            tokens = re.findall(pattern, resp.text)
+            if tokens:
+                return tokens[0]
+        
+        # Fallback: any escaped-quote token
+        tokens = re.findall(r'ArcGISToken\\":\\"([^"\\]+)', resp.text)
+        if tokens:
+            return tokens[0]
+        
+        # Fallback: old unescaped-quoted pattern (legacy format)
         tokens = re.findall(r'ArcGISToken":"([^"]+)"', resp.text)
         if tokens:
             return tokens[0]
@@ -125,15 +146,50 @@ _re_code = re.compile(r'[A-Za-z]+$')
 def _query_arcgis_layer(token, layer_id, license_code):
     requests = _get_requests()
     url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/{layer_id}/query"
+    out_fields = "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,Jurisdic,Region,DteApplied,DteGranted,DteExpires,AreaValue,AreaUnit,Commodities"
+    
+    # Try where-clause query first (standard ArcGIS approach)
     params = {
         "f": "json", "token": token,
         "where": f"Code = '{license_code}'",
-        "outFields": "Code,Name,Parties,Status,StatusGrp,TypeGroup,Type,Jurisdic,Region,DteApplied,DteGranted,DteExpires,AreaValue,AreaUnit,Commodities",
+        "outFields": out_fields,
         "returnGeometry": "true", "outSR": "4326",
         "resultRecordCount": 10, "resultOffset": 0,
     }
-    resp = requests.get(url, params=params, timeout=15, verify=False)
-    return resp.json().get("features", [])
+    try:
+        resp = requests.get(url, params=params, timeout=15, verify=False)
+        features = resp.json().get("features", [])
+        if features:
+            return features
+    except Exception:
+        pass
+    
+    # Fallback: scan by objectIds if where-clause is blocked by the server
+    # The INAMI ArcGIS server may disable SQL where queries for security
+    try:
+        # Query in batches of 50 by objectId
+        for batch_start in range(0, 5000, 50):
+            oids = ",".join(str(i) for i in range(batch_start, batch_start + 50))
+            resp = requests.get(url, params={
+                "f": "json", "token": token,
+                "objectIds": oids,
+                "outFields": out_fields,
+                "returnGeometry": "true", "outSR": "4326",
+            }, timeout=15, verify=False)
+            data = resp.json()
+            features = data.get("features", [])
+            if not features:
+                if batch_start > 0:
+                    break  # No more records
+                continue
+            # Filter for matching Code
+            matching = [f for f in features if f.get("attributes", {}).get("Code") == license_code]
+            if matching:
+                return matching
+    except Exception:
+        pass
+    
+    return []
 
 def _arcgis_date_to_str(timestamp_ms):
     if not timestamp_ms or timestamp_ms <= 0:
@@ -160,7 +216,7 @@ def polygon_to_bbox(polygon_geojson, padding=POLYGON_PADDING_DEG):
 
 def get_real_mozambique_cadastre(license_id):
     clean_id = str(license_id).strip()
-    token = _get_arcgis_token()
+    token = _get_arcgis_token("Licenses_Mining")
     if not token:
         if clean_id in ("11521", "11521CM"):
             return _hardcoded_11521()
@@ -979,7 +1035,7 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
 # ================================================================
 def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
     requests_lib = _get_requests()
-    token = _get_arcgis_token()
+    token = _get_arcgis_token("Licenses_Mining")
     if not token:
         return []
     
