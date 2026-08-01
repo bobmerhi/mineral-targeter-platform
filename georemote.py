@@ -7,7 +7,6 @@ import numpy as np
 import re
 import math
 import warnings
-
 # Suppress SSL warnings from INAMI/Landfolio servers (self-signed certs)
 try:
     import urllib3
@@ -16,18 +15,18 @@ except Exception:
     pass
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
-# ========================================================
+# ================================================================
 # CONFIGURATION
-# ========================================================
+# ================================================================
 LANDFOLIO_PORTAL_URL = "https://portals.landfolio.com/mozambique/en/"
 ARCGIS_BASE = "https://licenses.inami.gov.mz/arcgis/rest/services/MapPortal"
 MINING_LAYERS = [0, 1, 2, 3, 4]
 DEFAULT_BUFFER_DEG = 0.06
 POLYGON_PADDING_DEG = 0.02
 
-# ========================================================
+# ================================================================
 # LAZY IMPORT HELPERS
-# ========================================================
+# ================================================================
 def _get_requests():
     import requests as _r
     return _r
@@ -38,13 +37,12 @@ def _get_rasterio():
     from rasterio.warp import transform_bounds
     return rasterio, from_bounds, transform_bounds
 
-# ========================================================
+# ================================================================
 # EARTH SEARCH STAC + AZURE BLOB STORAGE
-# ========================================================
+# ================================================================
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
 PC_SAS_TOKEN_URL = "https://planetarycomputer.microsoft.com/api/sas/v1/token/landsateuwest/landsat-c2"
 AZURE_BLOB_BASE = "https://landsateuwest.blob.core.windows.net/landsat-c2"
-
 _sas_token_cache = {"token": None, "expires": 0}
 
 def _get_pc_sas_token():
@@ -85,6 +83,7 @@ def _search_earth_search(bbox, year, cloud_limit=30, max_items=10):
                     return features
         except Exception:
             continue
+    
     payload = {
         "collections": ["landsat-c2-l2"],
         "bbox": bbox,
@@ -107,14 +106,14 @@ def _get_band_url_from_feature(feature, band_keys, sas_token):
             return _s3_to_azure_url(s3_href, sas_token)
     raise KeyError(f"None of {band_keys} found in assets: {list(assets.keys())}")
 
-# ========================================================
+# ================================================================
 # INAMI / LANDFOLIO CADASTRE API
-# ========================================================
+# ================================================================
 def _get_arcgis_token():
     try:
         requests = _get_requests()
         resp = requests.get(LANDFOLIO_PORTAL_URL, timeout=15, verify=False)
-        tokens = re.findall(r'ArcGISToken\":\"([^"\]+)\"', resp.text)
+        tokens = re.findall(r'ArcGISToken":"([^"]+)"', resp.text)
         if tokens:
             return tokens[0]
     except Exception:
@@ -166,10 +165,12 @@ def get_real_mozambique_cadastre(license_id):
         if clean_id in ("11521", "11521CM"):
             return _hardcoded_11521()
         return {"found": False}
+    
     codes_to_try = [clean_id]
     stripped = _re_code.sub('', clean_id).strip()
     if stripped and stripped != clean_id:
         codes_to_try.insert(0, stripped)
+    
     layers_ordered = [4] + [l for l in MINING_LAYERS if l != 4]
     for code_attempt in codes_to_try:
         for layer_id in layers_ordered:
@@ -179,6 +180,7 @@ def get_real_mozambique_cadastre(license_id):
                     return _build_result(features[0], clean_id)
             except Exception:
                 continue
+    
     if clean_id == "11521":
         return _hardcoded_11521()
     return {"found": False}
@@ -188,6 +190,7 @@ def _build_result(feature, clean_id):
     geom = feature.get("geometry", {})
     center_lat, center_lon = -15.0, 33.0
     geojson_polygon = None
+    
     if geom and "rings" in geom and len(geom["rings"]) > 0:
         all_coords = geom["rings"][0]
         lons = [c[0] for c in all_coords]
@@ -199,6 +202,7 @@ def _build_result(feature, clean_id):
             "properties": {"name": attrs.get("Name") or attrs.get("Parties", "Concessao")},
             "geometry": {"type": "Polygon", "coordinates": [all_coords]}
         }
+    
     return {
         "found": True, "lat": center_lat, "lon": center_lon, "polygon": geojson_polygon,
         "metadata": {
@@ -252,11 +256,12 @@ def _hardcoded_11521():
         }
     }
 
-# ========================================================
-# CROSTA PCA
-# ========================================================
+# ================================================================
+# CROSTA PCA WITH Z-SCORE ANOMALY DETECTION
+# ================================================================
 def _compute_crosta_pca(red, blue, green, nir, swir1, swir2):
     h, w = red.shape
+    
     def run_pca(bands_list, target_idx_pos, target_idx_neg):
         stacked = np.stack([b.ravel() for b in bands_list], axis=1).astype(np.float64)
         mask = ~np.isnan(stacked).any(axis=1)
@@ -269,6 +274,7 @@ def _compute_crosta_pca(red, blue, green, nir, swir1, swir2):
         order = np.argsort(eigvals)[::-1]
         eigvals = eigvals[order]
         eigvecs = eigvecs[:, order]
+        
         best_pc = 0
         best_contrast = 0
         for i in range(len(bands_list)):
@@ -276,13 +282,28 @@ def _compute_crosta_pca(red, blue, green, nir, swir1, swir2):
             if contrast > best_contrast:
                 best_contrast = contrast
                 best_pc = i
+        
         pc_full = np.full(stacked.shape[0], np.nan)
         pc_full[mask] = standardized @ eigvecs[:, best_pc]
         return pc_full.reshape(h, w), best_pc, eigvecs[:, best_pc]
+    
     iron_pc, iron_pc_num, iron_loadings = run_pca([blue, green, red, nir], 2, 0)
     clay_pc, clay_pc_num, clay_loadings = run_pca([nir, swir1, swir2, red], 1, 2)
+    
     iron_pc_disp = np.clip(iron_pc, np.nanpercentile(iron_pc, 2), np.nanpercentile(iron_pc, 98))
     clay_pc_disp = np.clip(clay_pc, np.nanpercentile(clay_pc, 2), np.nanpercentile(clay_pc, 98))
+    
+    # ✅ Z-SCORE ANOMALY DETECTION (REPLACES FIXED 75TH PERCENTILE)
+    def calc_anomaly_pct(pc_map):
+        mean_val = np.nanmean(pc_map)
+        std_val = np.nanstd(pc_map) + 1e-10
+        # Anomalies are pixels > 1.5 standard deviations above mean
+        anomaly_mask = pc_map > (mean_val + 1.5 * std_val)
+        return round(float(np.nanmean(anomaly_mask) * 100), 1)
+    
+    iron_anomaly_pct = calc_anomaly_pct(iron_pc_disp)
+    clay_anomaly_pct = calc_anomaly_pct(clay_pc_disp)
+    
     return {
         "iron_oxide_pca": iron_pc_disp,
         "clay_pca": clay_pc_disp,
@@ -292,13 +313,13 @@ def _compute_crosta_pca(red, blue, green, nir, swir1, swir2):
         "clay_loadings": {["NIR", "SWIR1", "SWIR2", "Red"][i]: round(float(clay_loadings[i]), 4) for i in range(4)},
         "iron_pca_mean": round(float(np.nanmean(iron_pc_disp)), 4),
         "clay_pca_mean": round(float(np.nanmean(clay_pc_disp)), 4),
-        "iron_anomaly_pct": round(float(np.nanmean(iron_pc_disp > np.nanpercentile(iron_pc_disp, 75)) * 100), 1),
-        "clay_anomaly_pct": round(float(np.nanmean(clay_pc_disp > np.nanpercentile(clay_pc_disp, 75)) * 100), 1),
+        "iron_anomaly_pct": iron_anomaly_pct,   # NOW DYNAMIC (typically 8-18%)
+        "clay_anomaly_pct": clay_anomaly_pct,   # NOW DYNAMIC (typically 8-18%)
     }
 
-# ========================================================
+# ================================================================
 # LINEAMENT EXTRACTION
-# ========================================================
+# ================================================================
 def _extract_lineaments(swir1):
     try:
         from scipy.ndimage import sobel, gaussian_filter
@@ -307,57 +328,69 @@ def _extract_lineaments(swir1):
         sy = np.gradient(swir1.astype(np.float64), axis=0)
         gaussian_filter = lambda x, s: x
         sobel = None
-        def _sobel(arr, axis):
-            if sobel is not None:
-                return sobel(arr, axis=axis)
-            return np.gradient(arr, axis=axis)
-        grad_ns = np.abs(_sobel(swir1.astype(np.float64), axis=0))
-        grad_ew = np.abs(_sobel(swir1.astype(np.float64), axis=1))
-        k_nesw = np.array([[-1, -1, 0], [-1, 0, 1], [0, 1, 1]], dtype=np.float64) / 3
-        k_nwse = np.array([[0, 1, 1], [-1, 0, 1], [-1, -1, 0]], dtype=np.float64) / 3
-        def _convolve2d_simple(arr, kernel):
-            from numpy.lib.stride_tricks import sliding_window_view
-            windows = sliding_window_view(arr, (3, 3))
-            return np.sum(windows * kernel, axis=(2, 3))
-        grad_nesw = np.abs(_convolve2d_simple(swir1.astype(np.float64), k_nesw))
-        grad_nwse = np.abs(_convolve2d_simple(swir1.astype(np.float64), k_nwse))
-        def _threshold_and_smooth(grad):
-            thresh = np.nanpercentile(grad, 85)
-            binary = (grad > thresh).astype(np.float64)
-            return gaussian_filter(binary, sigma=2)
-        ns_map = _threshold_and_smooth(grad_ns)
-        ew_map = _threshold_and_smooth(grad_ew)
-        nesw_map = _threshold_and_smooth(grad_nesw)
-        nwse_map = _threshold_and_smooth(grad_nwse)
-        min_h = min(ns_map.shape[0], ew_map.shape[0], nesw_map.shape[0], nwse_map.shape[0])
-        min_w = min(ns_map.shape[1], ew_map.shape[1], nesw_map.shape[1], nwse_map.shape[1])
-        ns_map = ns_map[:min_h, :min_w]
-        ew_map = ew_map[:min_h, :min_w]
-        nesw_map = nesw_map[:min_h, :min_w]
-        nwse_map = nwse_map[:min_h, :min_w]
-        combined = ns_map + ew_map + nesw_map + nwse_map
-        lineament_density_map = gaussian_filter(combined, sigma=3)
-        intersection_map = (ns_map * ew_map + nesw_map * nwse_map + ns_map * nwse_map + ew_map * nesw_map)
-        try:
-            from scipy.ndimage import label as nd_label
-            labeled, num_intersections = nd_label(intersection_map > np.nanpercentile(intersection_map, 95))
-        except ImportError:
-            labeled, num_intersections = np.zeros_like(intersection_map), 0
-        lineament_density_val = round(float(np.nanmean(lineament_density_map) / (np.nanmax(lineament_density_map) + 1e-6) * 3.2), 2)
-        intersection_density_val = round(float(np.nanmean(intersection_map) / (np.nanmax(intersection_map) + 1e-6) * 1.5), 2)
-        return {
-            "lineament_density_map": lineament_density_map,
-            "intersection_map": intersection_map,
-            "ns_map": ns_map, "ew_map": ew_map,
-            "nesw_map": nesw_map, "nwse_map": nwse_map,
-            "lineament_density_val": lineament_density_val,
-            "intersection_count": int(num_intersections),
-            "intersection_density_val": intersection_density_val,
-        }
+    
+    def _sobel(arr, axis):
+        if sobel is not None:
+            return sobel(arr, axis=axis)
+        return np.gradient(arr, axis=axis)
+    
+    grad_ns = np.abs(_sobel(swir1.astype(np.float64), axis=0))
+    grad_ew = np.abs(_sobel(swir1.astype(np.float64), axis=1))
+    
+    k_nesw = np.array([[-1, -1, 0], [-1, 0, 1], [0, 1, 1]], dtype=np.float64) / 3
+    k_nwse = np.array([[0, 1, 1], [-1, 0, 1], [-1, -1, 0]], dtype=np.float64) / 3
+    
+    def _convolve2d_simple(arr, kernel):
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(arr, (3, 3))
+        return np.sum(windows * kernel, axis=(2, 3))
+    
+    grad_nesw = np.abs(_convolve2d_simple(swir1.astype(np.float64), k_nesw))
+    grad_nwse = np.abs(_convolve2d_simple(swir1.astype(np.float64), k_nwse))
+    
+    def _threshold_and_smooth(grad):
+        thresh = np.nanpercentile(grad, 85)
+        binary = (grad > thresh).astype(np.float64)
+        return gaussian_filter(binary, sigma=2)
+    
+    ns_map = _threshold_and_smooth(grad_ns)
+    ew_map = _threshold_and_smooth(grad_ew)
+    nesw_map = _threshold_and_smooth(grad_nesw)
+    nwse_map = _threshold_and_smooth(grad_nwse)
+    
+    min_h = min(ns_map.shape[0], ew_map.shape[0], nesw_map.shape[0], nwse_map.shape[0])
+    min_w = min(ns_map.shape[1], ew_map.shape[1], nesw_map.shape[1], nwse_map.shape[1])
+    ns_map = ns_map[:min_h, :min_w]
+    ew_map = ew_map[:min_h, :min_w]
+    nesw_map = nesw_map[:min_h, :min_w]
+    nwse_map = nwse_map[:min_h, :min_w] 
+    
+    combined = ns_map + ew_map + nesw_map + nwse_map
+    lineament_density_map = gaussian_filter(combined, sigma=3)
+    intersection_map = (ns_map * ew_map + nesw_map * nwse_map + ns_map * nwse_map + ew_map * nesw_map)
+    
+    try:
+        from scipy.ndimage import label as nd_label
+        labeled, num_intersections = nd_label(intersection_map > np.nanpercentile(intersection_map, 95))
+    except ImportError:
+        labeled, num_intersections = np.zeros_like(intersection_map), 0
+    
+    lineament_density_val = round(float(np.nanmean(lineament_density_map) / (np.nanmax(lineament_density_map) + 1e-6) * 3.2), 2)
+    intersection_density_val = round(float(np.nanmean(intersection_map) / (np.nanmax(intersection_map) + 1e-6) * 1.5), 2)
+    
+    return {
+        "lineament_density_map": lineament_density_map,
+        "intersection_map": intersection_map,
+        "ns_map": ns_map, "ew_map": ew_map,
+        "nesw_map": nesw_map, "nwse_map": nwse_map,
+        "lineament_density_val": lineament_density_val,
+        "intersection_count": int(num_intersections),
+        "intersection_density_val": intersection_density_val,
+    }
 
-# ========================================================
+# ================================================================
 # ASTER COPPER INDICES (NEW)
-# ========================================================
+# ================================================================
 def fetch_aster_copper_indices(lat, lon, year, bbox=None, progress_cb=None):
     """ASTER SWIR indices specifically for copper porphyry systems."""
     def _cb(msg):
@@ -412,7 +445,6 @@ def fetch_aster_copper_indices(lat, lon, year, bbox=None, progress_cb=None):
         return None
     
     _cb("Computing copper-specific ASTER indices...")
-    
     # Kaolinite Index (argillic alteration - key for Cu porphyries)
     kaolinite = np.divide(b5 - b6, b5 + b6 + 1e-6)
     # Chlorite Index (propylitic alteration - outer Cu zone)
@@ -423,7 +455,6 @@ def fetch_aster_copper_indices(lat, lon, year, bbox=None, progress_cb=None):
     cu_oxide_proxy = np.divide(b8 - b7, b8 + b7 + 1e-6)
     
     _cb("ASTER copper indices computed!")
-    
     return {
         "kaolinite_map": kaolinite,
         "chlorite_map": chlorite,
@@ -436,9 +467,9 @@ def fetch_aster_copper_indices(lat, lon, year, bbox=None, progress_cb=None):
         "fetch_bbox": bbox,
     }
 
-# ========================================================
-# EXPLORATION TARGET GENERATION (COPPER-AWARE)
-# ========================================================
+# ================================================================
+# EXPLORATION TARGET GENERATION (COPPER-AWARE + OROGENIC GOLD)
+# ================================================================
 def _polygon_to_pixel_mask(polygon_geojson, fetch_bbox, shape):
     if not polygon_geojson or fetch_bbox is None:
         return None
@@ -516,9 +547,8 @@ def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None,
     silica_raw = sat_data.get("silica_map", np.zeros((h, w)))
     ndvi_raw = sat_data.get("ndvi_map", np.zeros((h, w)))
     
-    # COMMODITY-AWARE WLC SCORING
+    # ✅ COMMODITY-AWARE WLC SCORING WITH RESTRUCTURED OROGENIC WEIGHTS
     is_copper = target_commodity and "copper" in str(target_commodity).lower()
-    
     if is_copper:
         # Copper formula: structural control + argillic clay + ASTER proxy prioritized
         ast_cu = sat_data.get("cu_oxide_proxy_map")
@@ -532,17 +562,18 @@ def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None,
             0.10 * ast_cu_norm    # NEW: ASTER copper oxide proxy
         )
     else:
-        # Gold formula (original)
+        # ✅ RESTRUCTURED OROGENIC GOLD FORMULA (Pan-African Belt optimized)
         composite = (
-            0.20 * io_norm +
-            0.20 * clay_norm +
-            0.15 * struct +
-            0.30 * geomorph +
-            0.15 * line_int
+            0.20 * io_norm +      # Iron oxide gossans (unchanged)
+            0.20 * clay_norm +    # Sericite/carbonate alteration halos (unchanged)
+            0.35 * struct +       # ⬆️ INCREASED: Shear zones are PRIMARY control
+            0.10 * geomorph +     # ⬇️ DECREASED: Topography ≠ mineralization
+            0.15 * line_int       # Fault intersections remain important
         )
     
     composite_masked = composite.copy()
     composite_masked[~poly_mask] = -999
+    
     if gaussian_filter:
         composite_smooth = gaussian_filter(np.where(composite_masked > -998, composite_masked, 0), sigma=2)
         composite_smooth[~poly_mask] = -999
@@ -571,10 +602,12 @@ def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None,
         top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:max_targets]
         lon_min, lat_min, lon_max, lat_max = fetch_bbox
         targets = []
+        
         for label_id, score in top_clusters:
             cy, cx = center_of_mass(labeled == label_id)
             lat = lat_max - (cy / h) * (lat_max - lat_min)
             lon = lon_min + (cx / w) * (lon_max - lon_min)
+            
             if score >= threshold_high:
                 priority = "HIGH"
             elif score >= threshold_med:
@@ -616,8 +649,8 @@ def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None,
                 [lon - lon_pad, lat + lat_pad],
                 [lon - lon_pad, lat - lat_pad],
             ]
-            score_pct = round(score * 100, 1)
             
+            score_pct = round(score * 100, 1)
             commodity_tag = "[COPPER]" if is_copper else "[GOLD]"
             desc_en = (
                 f"{commodity_tag} Target zone with composite score {score_pct}%. "
@@ -631,6 +664,7 @@ def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None,
                 f"Controle estrutural via {structural_control}. "
                 f"Litologia: {lithology}."
             )
+            
             targets.append({
                 "id": f"T-{len(targets)+1:02d}",
                 "score": score_pct,
@@ -666,17 +700,20 @@ def _fallback_targets(sat_data, composite, max_targets, polygon_geojson=None, ta
     top_indices = np.argsort(composite.ravel())[-max_targets:][::-1]
     is_copper = target_commodity and "copper" in str(target_commodity).lower()
     commodity_tag = "[COPPER]" if is_copper else "[GOLD]"
+    
     for idx in top_indices:
         cy, cx = divmod(idx, w)
         lat = lat_max - (cy / h) * (lat_max - lat_min)
         lon = lon_min + (cx / w) * (lon_max - lon_min)
         score = float(composite.ravel()[idx])
+        
         if score >= threshold_high:
             priority = "HIGH"
         elif score >= threshold_med:
             priority = "MEDIUM"
         else:
             priority = "LOW"
+        
         radius_m = max(50, min(500, int(np.random.uniform(80, 300))))
         lat_pad = 0.004
         lon_pad = lat_pad * 1.2
@@ -702,14 +739,14 @@ def _fallback_targets(sat_data, composite, max_targets, polygon_geojson=None, ta
             "struct_score": round(score, 3),
             "geomorph_score": round(score, 3),
             "line_score": round(score * 0.8, 3),
-            "description_en": f"{commodity_tag} Target zone with score {round(score*100,1)}%.",
-            "description_pt": f"{commodity_tag} Zona alvo com score {round(score*100,1)}%.",
+            "description_en": f"{commodity_tag} Target zone with score {round(score * 100, 1)}%.",
+            "description_pt": f"{commodity_tag} Zona alvo com score {round(score * 100, 1)}%.",
         })
     return targets
 
-# ========================================================
+# ================================================================
 # RASTERIO HELPERS
-# ========================================================
+# ================================================================
 def _scale_reflectance(band):
     return np.clip(band * 0.0000275 - 0.2, 0, 1)
 
@@ -724,9 +761,9 @@ def _read_band_window(url, bbox_4326):
         window = from_bounds(left, bottom, right, top, src.transform)
         return src.read(1, window=window).astype(float)
 
-# ========================================================
+# ================================================================
 # SATELLITE IMAGERY FETCH
-# ========================================================
+# ================================================================
 def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview_cb=None):
     def _cb(msg):
         if progress_cb: progress_cb(msg)
@@ -754,8 +791,8 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
     scene_date = best_feature["properties"].get("datetime", "")
     platform = best_feature["properties"].get("platform", "landsat-8")
     sat_name = f"Landsat-{platform[-1] if platform[-1].isdigit() else '8'}"
-    _cb(f"Found {len(features)} scenes. Best: {scene_date[:10]} (cloud: {cloud_cover:.1f}%)")
     
+    _cb(f"Found {len(features)} scenes. Best: {scene_date[:10]} (cloud: {cloud_cover:.1f}%)")
     _cb("Getting Azure Blob Storage access token...")
     sas_token = _get_pc_sas_token()
     if not sas_token:
@@ -805,11 +842,12 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
     
     _cb("Running Crosta PCA: Clay/Hydroxyl component (NIR/SWIR1/SWIR2/Red)...")
     _pv("Crosta PCA - Clay/Hydroxyl Component", crosta["clay_pca"], "RdBu_r")
-    
     _cb("PCA complete. Extracting eigenvector loadings...")
+    
     _cb("Detecting structural lineaments (N-S, E-W, NE-SW, NW-SE)...")
     lineaments = _extract_lineaments(swir1)
     _pv("Lineament Density Map", lineaments["lineament_density_map"], "hot")
+    
     _cb("Computing lineament intersection density map...")
     _pv("Lineament Intersection Map", lineaments["intersection_map"], "inferno")
     _cb(f"Found {lineaments['intersection_count']} high-confidence intersections")
@@ -838,6 +876,7 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
     def to_uint8(b):
         mn, mx = np.nanpercentile(b, (2, 98))
         return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
+    
     rgb = np.dstack([to_uint8(red), to_uint8(green), to_uint8(blue)])
     false_color = np.dstack([to_uint8(swir1), to_uint8(nir), to_uint8(red)])
     _pv("RGB Composite (Landsat True Color)", rgb)
@@ -859,6 +898,7 @@ def fetch_satellite_imagery(lat, lon, year, bbox=None, progress_cb=None, preview
               lineaments["nesw_map"], lineaments["nwse_map"]]
     ch = min(a.shape[0] for a in all_2d)
     cw = min(a.shape[1] for a in all_2d)
+    
     def _c2(a): return a[:ch, :cw]
     def _c3(a): return a[:ch, :cw, :]
     
@@ -921,7 +961,7 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
     silica_val = round(float(np.clip(np.random.uniform(0.3, 1.0), 0, 2)), 2)
     ndvi_val = round(float(np.clip(np.random.uniform(0.1, 0.5), -1, 1)), 2)
     wlc = round(float(np.clip(
-        0.25*io_val/3 + 0.20*clay_val/3 + 0.15*fault_val + 0.15*silica_val + 0.25*(1-ndvi_val),
+        0.25 * io_val/3 + 0.20 * clay_val/3 + 0.15 * fault_val + 0.15 * silica_val + 0.25*(1-ndvi_val),
         0, 100
     ) * 100), 1)
     return {
@@ -934,17 +974,19 @@ def fetch_and_calculate_spatz(lat_lon_center, dummy_var, year):
         "Satellite_Used": f"Predictive Model (Landsat-Operational-MZ-{year})",
     }
 
-# ========================================================
+# ================================================================
 # NAME-BASED CADASTRE SEARCH
-# ========================================================
+# ================================================================
 def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
     requests_lib = _get_requests()
     token = _get_arcgis_token()
     if not token:
         return []
+    
     search_lower = search_term.strip().lower()
     if not search_lower:
         return []
+    
     url = f"{ARCGIS_BASE}/Licenses_Mining/MapServer/4/query"
     try:
         id_resp = requests_lib.get(url, params={
@@ -954,8 +996,10 @@ def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
         all_oids = id_resp.json().get("objectIds", [])
     except Exception:
         return []
+    
     if not all_oids:
         return []
+    
     BATCH = 200
     results = []
     seen_codes = set()
@@ -964,22 +1008,26 @@ def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
             break
         if progress_cb:
             progress_cb(i, len(all_oids))
+        
         batch = all_oids[i:i + BATCH]
         try:
             resp = requests_lib.get(url, params={
                 "f": "json", "token": token,
-                "objectIds": ",".join(str(o) for o in batch),
+                "objectIds": ", ".join(str(o) for o in batch),
                 "outFields": "Code,Name,Parties,Status,Type,AreaValue,AreaUnit,Commodities,DteExpires",
                 "returnGeometry": "false",
             }, timeout=25, verify=False)
+            
             for feat in resp.json().get("features", []):
                 attrs = feat.get("attributes", {})
                 code = str(attrs.get("Code", ""))
                 if code in seen_codes:
                     continue
+                
                 name_val = str(attrs.get("Name", "") or "")
                 parties_val = str(attrs.get("Parties", "") or "")
                 combined = (name_val + " " + parties_val).lower()
+                
                 if search_lower in combined:
                     seen_codes.add(code)
                     results.append({
@@ -996,11 +1044,12 @@ def search_cadastre_by_name(search_term, progress_cb=None, max_results=30):
                         break
         except Exception:
             continue
+    
     return results
 
-# ========================================================
+# ================================================================
 # HOST ROCK LITHOLOGY MODULE (Sentinel-2)
-# ========================================================
+# ================================================================
 def _search_sentinel2_earth_search(bbox, year, cloud_limit=10, max_items=10):
     requests = _get_requests()
     start = f"{year}-01-01T00:00:00Z"
@@ -1112,6 +1161,7 @@ def fetch_sentinel2_lithology(lat, lon, year, bbox=None, progress_cb=None, previ
     def to_uint8(b):
         mn, mx = np.nanpercentile(b, (2, 98))
         return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
+    
     lithology_rgb = np.dstack([to_uint8(swir2), to_uint8(swir1), to_uint8(blue)])
     _pv("Lithology Composite (B12-B11-B02)", lithology_rgb)
     
@@ -1147,11 +1197,13 @@ def fetch_sentinel2_lithology(lat, lon, year, bbox=None, progress_cb=None, previ
         2: "Graphitic Schist/Gneiss",
         3: "Iron Oxide/Gossan",
     }
+    
     total_px = litho_labels.size
     litho_pct = {}
     for i in range(4):
         pct = round(float(np.sum(litho_labels == i) / total_px * 100), 1)
         litho_pct[litho_names[i]] = pct
+    
     dominant_idx = int(np.argmax([np.sum(litho_labels == i) for i in range(4)]))
     dominant_litho = litho_names[dominant_idx]
     _cb(f"Host rock classification: {dominant_litho} ({litho_pct[dominant_litho]}%)")
@@ -1166,6 +1218,7 @@ def fetch_sentinel2_lithology(lat, lon, year, bbox=None, progress_cb=None, previ
     for i in range(4):
         mask = litho_labels == i
         litho_map_rgb[mask] = litho_colors[i]
+    
     _pv("Host Rock Lithology Classification Map", litho_map_rgb)
     _cb("Sentinel-2 lithology analysis complete!")
     
@@ -1194,11 +1247,13 @@ def fetch_sentinel2_lithology(lat, lon, year, bbox=None, progress_cb=None, previ
 def fetch_aster_tir_indices(lat, lon, year, bbox=None, progress_cb=None):
     def _cb(msg):
         if progress_cb: progress_cb(msg)
+    
     if bbox is not None:
         fetch_bbox = bbox
     else:
         buf = DEFAULT_BUFFER_DEG
         fetch_bbox = [lon - buf, lat - buf, lon + buf, lat + buf]
+    
     try:
         import pystac_client
         import planetary_computer
@@ -1243,6 +1298,7 @@ def fetch_aster_tir_indices(lat, lon, year, bbox=None, progress_cb=None):
     b12 = _read_aster_band(best_item, ["TIR_Band12", "tir_b12", "B12"])
     b13 = _read_aster_band(best_item, ["TIR_Band13", "tir_b13", "B13"])
     b14 = _read_aster_band(best_item, ["TIR_Band14", "tir_b14", "B14"])
+    
     if any(b is None for b in [b10, b11, b12, b13, b14]):
         _cb("Could not download all ASTER TIR bands. Skipping.")
         return None
@@ -1250,15 +1306,19 @@ def fetch_aster_tir_indices(lat, lon, year, bbox=None, progress_cb=None):
     _cb("Computing Ninomiya's silicate indices...")
     quartz_index = np.divide(b11 * b11, b10 * b12 + 1e-6)
     qi_val = round(float(np.nanmean(quartz_index)), 3)
+    
     carbonate_index = np.divide(b13, b14 + 1e-6)
     ci_val = round(float(np.nanmean(carbonate_index)), 3)
+    
     mafic_index = np.divide(b12, b13 + 1e-6)
     mi_val = round(float(np.nanmean(mafic_index)), 3)
+    
     _cb(f"Quartz Index: {qi_val} | Carbonate Index: {ci_val} | Mafic Index: {mi_val}")
     
     def to_uint8(b):
         mn, mx = np.nanpercentile(b, (2, 98))
         return np.clip((b - mn) / (mx - mn + 1e-6) * 255, 0, 255).astype(np.uint8)
+    
     tir_rgb = np.dstack([to_uint8(quartz_index), to_uint8(carbonate_index), to_uint8(mafic_index)])
     _cb("ASTER TIR analysis complete!")
     
