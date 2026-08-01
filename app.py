@@ -815,14 +815,17 @@ with exp1:
 
 with exp2:
     st.markdown("### Satellite Image Overlays")
-    kmz_bytes = create_kmz_bundle(sat_data, polygon_geojson=active_poly,
-        metadata=st.session_state.get("concession_metadata"), fetch_bbox=fetch_bbox)
-    if kmz_bytes:
-        st.download_button("🌍 Export All Overlays (KMZ)", data=kmz_bytes,
-            file_name=f"satintel_overlays_{sat_data.get('scene_date', '')}.kmz",
-            mime="application/vnd.google-earth.kmz",
-            use_container_width=True)
-        st.caption("10 georeferenced image overlays + polygon boundary")
+    if sat_data:
+        kmz_bytes = create_kmz_bundle(sat_data, polygon_geojson=active_poly,
+            metadata=st.session_state.get("concession_metadata"), fetch_bbox=fetch_bbox)
+        if kmz_bytes:
+            st.download_button("🌍 Export All Overlays (KMZ)", data=kmz_bytes,
+                file_name=f"satintel_overlays_{sat_data.get('scene_date', '')}.kmz",
+                mime="application/vnd.google-earth.kmz",
+                use_container_width=True)
+            st.caption("10 georeferenced image overlays + polygon boundary")
+    else:
+        st.info("Fetch satellite imagery first to enable overlay exports.")
 
 if targets:
     st.markdown("---")
@@ -841,13 +844,15 @@ if targets:
 st.markdown("---")
 exp2_c1, exp2_c2 = st.columns(2)
 with exp2_c1:
-    geotiff_bytes = create_geotiff_bundle(sat_data, fetch_bbox=fetch_bbox)
-    if geotiff_bytes:
-        st.download_button("🗂️ Export Rasters (GeoTIFF ZIP)", data=geotiff_bytes,
-            file_name=f"satintel_geotiffs_{sat_data.get('scene_date','')}.zip",
-            mime="application/zip", use_container_width=True)
+    if sat_data:
+        geotiff_bytes = create_geotiff_bundle(sat_data, fetch_bbox=fetch_bbox)
+        if geotiff_bytes:
+            st.download_button("🗂️ Export Rasters (GeoTIFF ZIP)", data=geotiff_bytes,
+                file_name=f"satintel_geotiffs_{sat_data.get('scene_date','')}.zip",
+                mime="application/zip", use_container_width=True)
 with exp2_c2:
-    png_bytes = create_png_bundle(sat_data)
+    if sat_data:
+        png_bytes = create_png_bundle(sat_data)
     if png_bytes:
         st.download_button("🖼️ Export Images (PNG ZIP)", data=png_bytes,
             file_name=f"satintel_images_{sat_data.get('scene_date','')}.zip",

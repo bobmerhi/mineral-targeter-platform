@@ -328,6 +328,8 @@ def _kml_polygon_fragment(polygon_geojson, metadata=None):
     )
 
 def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=None):
+    if sat_data is None:
+        return None
     if fetch_bbox is None:
         fetch_bbox = sat_data.get("fetch_bbox")
     if fetch_bbox is None:
@@ -388,6 +390,8 @@ def create_kmz_bundle(sat_data, polygon_geojson=None, metadata=None, fetch_bbox=
 # GEOTIFF BUNDLE
 # ================================================================
 def create_geotiff_bundle(sat_data, fetch_bbox=None):
+    if sat_data is None:
+        return None
     if fetch_bbox is None:
         fetch_bbox = sat_data.get("fetch_bbox")
     if fetch_bbox is None or not HAS_RASTERIO:
@@ -409,6 +413,8 @@ def create_geotiff_bundle(sat_data, fetch_bbox=None):
 # PNG BUNDLE
 # ================================================================
 def create_png_bundle(sat_data):
+    if sat_data is None:
+        return None
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for img_name, key, cmap, vmin, vmax in IMAGE_SPECS:
