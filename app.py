@@ -411,6 +411,11 @@ if trace_coord_text:
     except ValueError:
         st.sidebar.error("Invalid coordinates. Use: latitude, longitude")
 
+trace_radius = st.sidebar.slider(
+    "Search Radius (meters)",
+    min_value=500, max_value=5000, value=1000, step=100,
+    help="Defines upstream/downstream extent for stream network extraction")
+
 trace_btn = st.sidebar.button("🔍 Trace Source", type="primary", use_container_width=True, key="trace_source_btn",
     disabled=(trace_lat is None or trace_lon is None))
 
@@ -463,6 +468,32 @@ with col1:
         icon=folium.Icon(color="red", icon="info-sign")
     ).add_to(m)
     
+    # Phase 6: Stream network overlay (blue polylines)
+    tracer_streams = st.session_state.get("tracer_streams", [])
+    if tracer_streams:
+        for line in tracer_streams:
+            folium.PolyLine(
+                locations=[(lat, lon) for lon, lat in line],  # folium uses lat,lon
+                color="#0066FF",
+                weight=3,
+                opacity=0.7,
+                popup="Stream Network"
+            ).add_to(m)
+
+    # Phase 6: Tracer target points (yellow markers)
+    tracer_targets = st.session_state.get("tracer_targets", [])
+    if tracer_targets:
+        for t in tracer_targets:
+            folium.CircleMarker(
+                location=[t.get("lat", 0), t.get("lon", 0)],
+                radius=8,
+                color="#FFD700",
+                fill=True,
+                fill_color="#FFFF00",
+                fill_opacity=0.8,
+                tooltip=f"{t.get('source_type', 'Target')} (Score: {t.get('score', 0)})"
+            ).add_to(m)
+
     map_data = st_folium(m, width=560, height=400, key=f"map_{selected_basemap}")
     
     # Map-click handling
@@ -943,7 +974,10 @@ if trace_btn:
             try:
                 from georemote import fetch_dem_data
                 # Use a 0.1 degree buffer (~11km) around the point for DEM
-                dem_bbox = [trace_lon - 0.1, trace_lat - 0.1, trace_lon + 0.1, trace_lat + 0.1]
+                # Buffer DEM bbox by search_radius (~111km per degree) with padding
+                deg_buffer = max((trace_radius / 111000) + 0.02, 0.05)
+                dem_bbox = [trace_lon - deg_buffer, trace_lat - deg_buffer,
+                            trace_lon + deg_buffer, trace_lat + deg_buffer]
                 _trace_cb("Fetching DEM on-demand (no satellite data required)...")
                 dem_data_tracer = fetch_dem_data(dem_bbox, progress_cb=_trace_cb)
                 if fetch_bbox_tracer is None:
@@ -955,7 +989,7 @@ if trace_btn:
         trace_result = trace_alluvial_source(
             float(trace_lat), float(trace_lon),
             tracer_sat_data, dem_data=dem_data_tracer,
-            progress_cb=_trace_cb
+            progress_cb=_trace_cb, search_radius=int(trace_radius)
         )
 
         trace_status.update(label="Source tracing complete", state="complete")
@@ -979,6 +1013,10 @@ if trace_btn:
             st.warning("No source targets identified. Try adjusting coordinates.")
         else:
             st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
+
+            # Store for map overlay
+            st.session_state["tracer_streams"] = trace_result.get("stream_polylines", [])
+            st.session_state["tracer_targets"] = targets_st
 
             st.markdown("### 🔍 Phase 6: Probable Source Targets")
             target_data_st = []

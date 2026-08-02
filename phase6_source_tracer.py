@@ -24,17 +24,22 @@ def _pixel_to_lat_lon(row, col, dem_shape, sat_data):
     return None, None
 
 
-def _extract_stream_network(flow_acc, dem_shape, sat_data, threshold_percentile=95):
+def _extract_stream_network(twi, curvature, dem_shape, sat_data, threshold_percentile=90):
     """
-    Extracts stream network as polylines from flow accumulation raster.
+    Extracts stream network as polylines using TWI + curvature.
+    High TWI + concave curvature = stream channels.
     Returns list of [lon, lat] coordinate lists for each stream segment.
     """
-    valid_acc = flow_acc[flow_acc > 0]
-    if len(valid_acc) == 0:
+    # Stream channels: high TWI (water accumulation) + positive curvature (concave = convergent)
+    valid_twi = twi[~np.isnan(twi)]
+    if len(valid_twi) == 0:
         return []
 
-    threshold = np.percentile(valid_acc, threshold_percentile)
-    stream_mask = flow_acc >= threshold
+    twi_threshold = np.percentile(valid_twi, threshold_percentile)
+    curv_threshold = np.percentile(curvature[~np.isnan(curvature)], 70)  # top 30% curvature
+
+    # Stream mask: high TWI AND convergent curvature
+    stream_mask = (twi >= twi_threshold) & (curvature >= curv_threshold)
 
     from scipy.ndimage import label
 
@@ -43,7 +48,7 @@ def _extract_stream_network(flow_acc, dem_shape, sat_data, threshold_percentile=
 
     for i in range(1, num_segments + 1):
         segment_pixels = np.where(labeled == i)
-        if len(segment_pixels[0]) < 20:  # Filter noise
+        if len(segment_pixels[0]) < 10:  # Filter noise (lowered from 20)
             continue
 
         rows, cols = segment_pixels
@@ -66,7 +71,7 @@ def _extract_stream_network(flow_acc, dem_shape, sat_data, threshold_percentile=
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
-def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, dem_data=None, progress_cb=None):
+def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, dem_data=None, progress_cb=None, search_radius=1000):
     """
     Traces upstream from a confirmed alluvial gold point to identify probable bedrock sources.
 
@@ -105,14 +110,11 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, de
     # 2. CATCHMENT EXTRACTION (local buffer for proximal deposits)
     _cb("Step 2: Extracting local catchment (1km radius for proximal tracing)...")
     catchment_mask = _extract_upstream_catchment_tracer(
-        None, confirmed_point_lat, confirmed_point_lon, dem_data, sat_data)
+        None, confirmed_point_lat, confirmed_point_lon, dem_data, sat_data, search_radius)
 
     # 2b. EXTRACT FULL STREAM NETWORK
     _cb("Step 2b: Extracting full stream network (upstream + downstream)...")
-    grad_y_sn, grad_x_sn = np.gradient(dem_data)
-    slope_sn = np.arctan(np.sqrt(grad_x_sn**2 + grad_y_sn**2))
-    flow_acc_sn = 1.0 / (slope_sn + 1e-6)
-    stream_polylines = _extract_stream_network(flow_acc_sn, dem_data.shape, sat_data)
+    stream_polylines = _extract_stream_network(twi, curvature, dem_data.shape, sat_data)
     _cb(f"Found {len(stream_polylines)} stream segments")
 
     # 3. IDENTIFY GEOMETRIC POCKETS
@@ -182,11 +184,11 @@ def _identify_pockets(twi, curvature, catchment_mask):
     return pockets
 
 
-def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data):
-    """Extracts local catchment mask (1km radius buffer for proximal deposits)."""
+def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data, search_radius=1000):
+    """Extracts local catchment mask (buffer based on search_radius for proximal deposits)."""
     h, w = dem_data.shape
 
-    fetch_bbox = sat_data.get("fetch_bbox", None)
+    fetch_bbox = sat_data.get("fetch_bbox", None) if sat_data else None
     if fetch_bbox:
         min_lon, min_lat, max_lon, max_lat = fetch_bbox
         col = int((lon - min_lon) / (max_lon - min_lon) * w)
@@ -196,9 +198,15 @@ def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data):
     else:
         row, col = int(h/2), int(w/2)
 
-    # ~1km buffer for proximal quartz vein tracing
-    # SRTM is ~90m resolution, so 1km ≈ 11 pixels
-    buffer_size = min(15, h//4, w//4)
+    # Buffer based on search_radius (SRTM ~90m resolution, AW3D30 ~30m)
+    # Estimate pixel size from bbox
+    if fetch_bbox:
+        min_lon, min_lat, max_lon, max_lat = fetch_bbox
+        pixel_size_m = ((max_lon - min_lon) / w) * 111000  # approx meters per pixel
+        buffer_size = int(search_radius / max(pixel_size_m, 30))
+    else:
+        buffer_size = int(search_radius / 90)  # default ~90m SRTM
+    buffer_size = max(5, min(buffer_size, h//3, w//3))
     y_min, y_max = max(0, row-buffer_size), min(h, row+buffer_size)
     x_min, x_max = max(0, col-buffer_size), min(w, col+buffer_size)
 
