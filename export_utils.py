@@ -431,59 +431,60 @@ def create_png_bundle(sat_data):
 
 def create_kml(targets, filename="source_trace.kml", stream_polylines=None):
     """Generates a KML string for Google Earth from target dicts + optional stream network."""
-    kml_header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
+    kml = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    kml += '<kml xmlns="http://www.opengis.net/kml/2.2">\n'
+    kml += '<Document>\n'
     
-    # Stream network style (blue lines)
-    kml_header += """
-<Style id="streamStyle">
-    <LineStyle>
-        <color>ffff0000</color>
-        <width>4</width>
-    </LineStyle>
-</Style>
-<Style id="targetStyle">
-    <IconStyle>
-        <color>ffffff00</color>
-        <scale>1.2</scale>
-        <Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon>
-    </IconStyle>
-</Style>
-"""
+    # Style: Blue stream lines (AABBGGRR format: ff=alpha, ff=blue, 00=green, 00=red)
+    kml += '<Style id="blueStream">\n'
+    kml += '  <LineStyle>\n'
+    kml += '    <color>ffff0000</color>\n'
+    kml += '    <width>3</width>\n'
+    kml += '  </LineStyle>\n'
+    kml += '</Style>\n'
     
-    kml_footer = '</Document>\n</kml>'
-    placemarks = ""
+    # Style: Yellow target pins
+    kml += '<Style id="targetPin">\n'
+    kml += '  <IconStyle>\n'
+    kml += '    <color>ffffff00</color>\n'
+    kml += '    <scale>1.2</scale>\n'
+    kml += '    <Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon>\n'
+    kml += '  </IconStyle>\n'
+    kml += '</Style>\n'
     
-    # Add stream network polylines first (background layer)
+    # Stream network polylines (rendered first = background layer)
     if stream_polylines:
         for idx, line in enumerate(stream_polylines):
-            coords_str = " ".join([f"{lon},{lat},0" for lon, lat in line])
-            placemarks += f"""
-        <Placemark>
-            <name>Stream Segment {idx+1}</name>
-            <styleUrl>#streamStyle</styleUrl>
-            <LineString>
-                <tessellate>1</tessellate>
-                <coordinates>{coords_str}</coordinates>
-            </LineString>
-        </Placemark>
-        """
+            if len(line) < 2:
+                continue
+            # Explicit float conversion + 6 decimal places for clean KML coordinates
+            coords_str = " ".join([f"{float(lon):.6f},{float(lat):.6f},0" for lon, lat in line])
+            kml += f'<Placemark>\n'
+            kml += f'  <name>Stream Segment {idx+1}</name>\n'
+            kml += f'  <styleUrl>#blueStream</styleUrl>\n'
+            kml += f'  <LineString>\n'
+            kml += f'    <tessellate>1</tessellate>\n'
+            kml += f'    <coordinates>{coords_str}</coordinates>\n'
+            kml += f'  </LineString>\n'
+            kml += f'</Placemark>\n'
     
-    # Add target placemarks (foreground layer)
+    # Target placemarks (rendered after = foreground layer)
     for t in targets:
-        lat = t.get('lat', 0.0)
-        lon = t.get('lon', 0.0)
+        lat = float(t.get('lat', 0.0))
+        lon = float(t.get('lon', 0.0))
         name = f"{t.get('source_type', 'Unknown')} (Score: {t.get('score', 0)})"
-        desc = f"TWI: {t.get('twi_score', 0)} | Curvature: {t.get('curvature_score', 0)} | HMI: {t.get('hmi_score', 0)} | FSI: {t.get('fsi_score', 0)} | Struct: {t.get('struct_score', 0)}\nTrap: {t.get('trap_note', '')}"
+        desc = (f"TWI: {t.get('twi_score', 0)} | Curvature: {t.get('curvature_score', 0)} | "
+                f"HMI: {t.get('hmi_score', 0)} | FSI: {t.get('fsi_score', 0)} | "
+                f"Struct: {t.get('struct_score', 0)}\nTrap: {t.get('trap_note', '')}")
         
-        placemarks += f"""
-        <Placemark>
-            <name>{name}</name>
-            <description>{desc}</description>
-            <styleUrl>#targetStyle</styleUrl>
-            <Point>
-                <coordinates>{lon},{lat},0</coordinates>
-            </Point>
-        </Placemark>
-        """
-        
-    return (kml_header + placemarks + kml_footer).encode('utf-8')
+        kml += f'<Placemark>\n'
+        kml += f'  <name>{name}</name>\n'
+        kml += f'  <description>{desc}</description>\n'
+        kml += f'  <styleUrl>#targetPin</styleUrl>\n'
+        kml += f'  <Point>\n'
+        kml += f'    <coordinates>{lon:.6f},{lat:.6f},0</coordinates>\n'
+        kml += f'  </Point>\n'
+        kml += f'</Placemark>\n'
+    
+    kml += '</Document>\n</kml>'
+    return kml.encode('utf-8')
