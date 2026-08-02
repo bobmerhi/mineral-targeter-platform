@@ -10,3 +10,4 @@ matplotlib>=3.7.0
 fpdf2>=2.7.0
 scipy>=1.10.0
 Pillow>=9.0.0
+affine>=0.4.0
