@@ -164,29 +164,24 @@ def _generate_source_targets_tracer(twi, curvature, hmi_map, fsi_map, struct_map
     twi_norm = norm_01(twi.copy())
     curv_norm = norm_01(curvature.copy())
 
-    # Normalize spectral layers (secondary) — skip if not available
-    if hmi_map is None or np.all(hmi_map == 0):
-        hmi_norm = np.zeros_like(twi_norm)  # Default to zero if no spectral data
-    else:
-        hmi_norm = norm_01(hmi_map.copy())
+    # --- SPECTRAL DATA SAFETY CHECK ---
+    # If satellite indices are missing or empty, default to zero so geometry takes priority
+    def safe_norm(arr):
+        if arr is None or np.all(arr == 0) or np.all(arr == -999):
+            return np.zeros_like(twi_norm)
+        return norm_01(arr.copy())
 
-    if fsi_map is None or np.all(fsi_map == 0):
-        fsi_norm = np.zeros_like(twi_norm)
-    else:
-        fsi_norm = norm_01(fsi_map.copy())
+    hmi_norm = safe_norm(hmi_map)
+    fsi_norm = safe_norm(fsi_map)
+    struct_norm = safe_norm(lineament_density)
+    # ------------------------------------
 
-    if struct_map is None or np.all(struct_map == 0):
-        struct_norm = np.zeros_like(twi_norm)
-    else:
-        struct_norm = norm_01(struct_map.copy())
-
-    # Composite score: Geometric traps dominate (70%), spectral cross-ref (30%)
+    # Composite Score: Heavily weighted toward Geometry for proximal tracing
     composite = (
         0.35 * twi_norm +      # Wetness (saturated deposition zones)
-        0.35 * curv_norm +    # Convergence (funnel topography)
-        0.15 * hmi_norm +     # Heavy mineral confirmation
-        0.10 * fsi_norm +     # Mafic source rock
-        0.05 * struct_norm    # Structural pathway
+        0.35 * curv_norm +     # Convergence (funnel topography)
+        0.15 * hmi_norm +      # Heavy mineral confirmation (if available)
+        0.15 * struct_norm     # Structural traps
     )
     composite[~catchment_mask] = -999
 
