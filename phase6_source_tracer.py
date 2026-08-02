@@ -164,10 +164,21 @@ def _generate_source_targets_tracer(twi, curvature, hmi_map, fsi_map, struct_map
     twi_norm = norm_01(twi.copy())
     curv_norm = norm_01(curvature.copy())
 
-    # Normalize spectral layers (secondary)
-    hmi_norm = norm_01(hmi_map.copy())
-    fsi_norm = norm_01(fsi_map.copy())
-    struct_norm = norm_01(struct_map.copy())
+    # Normalize spectral layers (secondary) — skip if not available
+    if hmi_map is None or np.all(hmi_map == 0):
+        hmi_norm = np.zeros_like(twi_norm)  # Default to zero if no spectral data
+    else:
+        hmi_norm = norm_01(hmi_map.copy())
+
+    if fsi_map is None or np.all(fsi_map == 0):
+        fsi_norm = np.zeros_like(twi_norm)
+    else:
+        fsi_norm = norm_01(fsi_map.copy())
+
+    if struct_map is None or np.all(struct_map == 0):
+        struct_norm = np.zeros_like(twi_norm)
+    else:
+        struct_norm = norm_01(struct_map.copy())
 
     # Composite score: Geometric traps dominate (70%), spectral cross-ref (30%)
     composite = (
