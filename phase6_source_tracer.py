@@ -1,8 +1,9 @@
-# PHASE 6: ALLUVIAL SOURCE TRACER MODULE
+# PHASE 6: ALLUVIAL SOURCE TRACER MODULE (Refined for Proximal Quartz Vein Tracing)
 # ==============================================================================
-# Implements "Pathfinder to Source" tracing based on Amiri et al. (2005)
-# and Robert et al. (2007). Uses DEM-based flow accumulation and spectral
-# lithology matching to identify primary bedrock sources from alluvial points.
+# Shifted from long-distance spectral tracing to local geometric trapping.
+# Gold in this region travels <1km from quartz veins, so we prioritize
+# Topographic Wetness Index (TWI) and Planform Curvature over flow routing.
+# Based on: Amiri et al. (2005), Robert et al. (2007)
 # Option A (Free): AW3D30/SRTM DEM + Sentinel-2 Spectral Indices.
 # Option B (Paid): Airborne LiDAR (Bare Earth) + Drone Magnetometry.
 # ==============================================================================
@@ -16,16 +17,19 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, de
     """
     Traces upstream from a confirmed alluvial gold point to identify probable bedrock sources.
 
-    OPTION A (FREE): Uses AW3D30/SRTM DEM for flow direction/accumulation and
-                     Sentinel-2 FSI/HMI indices for lithology matching.
-    OPTION B (PAID): Triggered if high-res DEM unavailable; returns LiDAR upgrade metadata.
+    Uses local geometric traps (TWI + Curvature) for proximal quartz vein deposits.
+    Gold travels <1km from source, so geometric trapping > long-distance flow routing.
+
+    OPTION A (FREE): Uses AW3D30/SRTM DEM for TWI/Curvature + Sentinel-2 indices.
+    OPTION B (PAID): Triggered if no DEM available; returns LiDAR upgrade metadata.
     """
     def _cb(msg):
         if progress_cb:
             progress_cb(msg)
 
-    if dem_data is None:
-        _cb("⚠️ NO HIGH-RESOLUTION DEM FOR HYDROLOGICAL TRACING")
+    # Check for valid DEM data
+    if dem_data is None or (isinstance(dem_data, np.ndarray) and (dem_data.size == 0 or np.max(dem_data) == 0)):
+        _cb("⚠️ NO DEM DATA AVAILABLE FOR GEOMETRIC TRAPPING")
         _cb("OPTION B (PAID UPGRADE) AVAILABLE:")
         _cb("- Airborne LiDAR (Bare Earth): Strips vegetation to reveal true micro-topography")
         _cb("- Drone Magnetometry: Maps subsurface heavy mineral concentrations under cover")
@@ -39,64 +43,85 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, de
             "delivery_weeks": 2
         }
 
-    _cb("Starting Alluvial Source Tracing...")
+    _cb("Starting Alluvial Source Tracing (Proximal Quartz Vein Mode)...")
 
-    # 1. GEOMORPHOLOGICAL TRACING: Calculate Upstream Catchment
-    _cb("Step 1: Calculating Flow Direction and Accumulation (AW3D30/SRTM)...")
-    flow_dir = _compute_flow_direction_tracer(dem_data)
-    flow_acc = _compute_flow_accumulation_tracer(dem_data)
+    # 1. GEOMETRIC TRAP CALCULATION: TWI + Curvature
+    _cb("Step 1: Calculating Topographic Wetness Index (TWI) and Planform Curvature...")
+    twi, curvature = _calculate_geometric_traps(dem_data)
 
+    # 2. CATCHMENT EXTRACTION (local buffer for proximal deposits)
+    _cb("Step 2: Extracting local catchment (1km radius for proximal tracing)...")
     catchment_mask = _extract_upstream_catchment_tracer(
-        flow_dir, confirmed_point_lat, confirmed_point_lon, dem_data, sat_data)
+        None, confirmed_point_lat, confirmed_point_lon, dem_data, sat_data)
 
-    # 2. SPECTRAL LITHOLOGY MATCHING: Find Source Rock Fingerprints
-    _cb("Step 2: Mapping Heavy Mineral Sources (Sentinel-2 FSI/HMI)...")
-    # Map existing sat_data keys to tracer expected keys
+    # 3. IDENTIFY GEOMETRIC POCKETS
+    _cb("Step 3: Identifying deposition pockets (high TWI + high convergence)...")
+    pockets = _identify_pockets(twi, curvature, catchment_mask)
+
+    # 4. SPECTRAL LITHOLOGY MATCHING (secondary indicator)
+    _cb("Step 4: Cross-referencing with spectral lithology (Sentinel-2)...")
     hmi_raw = sat_data.get("hmi_map", sat_data.get("iron_oxide_map", np.zeros_like(dem_data)))
     fsi_raw = sat_data.get("fsi_map", np.zeros_like(dem_data))
-
-    hmi_catchment = np.where(catchment_mask, hmi_raw, -999)
-    fsi_catchment = np.where(catchment_mask, fsi_raw, -999)
-
-    # 3. STRUCTURAL CONTROL ANALYSIS: Find Fault Intersections in Catchment
-    _cb("Step 3: Identifying Structural Hotspots in Catchment...")
     lineament_density = sat_data.get("lineament_density_map", np.zeros_like(dem_data))
-    struct_catchment = np.where(catchment_mask, lineament_density, -999)
 
-    # 4. TARGET GENERATION: Converge Geomorphic, Spectral, and Structural Lines
-    _cb("Step 4: Generating Probable Source Targets...")
+    # 5. TARGET GENERATION using geometric traps + spectral cross-reference
+    _cb("Step 5: Generating probable source targets...")
     targets = _generate_source_targets_tracer(
-        hmi_catchment, fsi_catchment, struct_catchment,
-        catchment_mask, dem_data, sat_data)
+        twi, curvature, hmi_raw, fsi_raw, lineament_density,
+        catchment_mask, pockets, dem_data, sat_data)
 
-    _cb("Source Tracing Complete!")
+    _cb(f"Source Tracing Complete! Found {len(targets)} targets.")
 
     return {
         "status": "success",
         "catchment_mask": catchment_mask,
-        "flow_accum_map": flow_acc,
+        "twi_map": twi,
+        "curvature_map": curvature,
+        "pockets_mask": pockets,
         "targets": targets,
         "data_source": "AW3D30/SRTM + Sentinel-2 (FREE)"
     }
 
 
-def _compute_flow_direction_tracer(dem_data):
-    """Computes D8 flow direction from DEM using gradient-based approximation."""
+def _calculate_geometric_traps(dem_data):
+    """
+    Calculates Topographic Wetness Index (TWI) and Planform Curvature.
+    
+    TWI identifies saturated "mud nursery" zones where gold particles settle.
+    Curvature identifies convergent "funnels" that concentrate heavy minerals.
+    """
     grad_y, grad_x = np.gradient(dem_data)
-    angle = np.arctan2(-grad_y, -grad_x)
-    return angle
+    slope = np.arctan(np.sqrt(grad_x**2 + grad_y**2))
+
+    # Flow Accumulation Proxy
+    flow_acc = 1.0 / (slope + 1e-6)
+
+    # Topographic Wetness Index (TWI) - Identifies saturated zones
+    twi = np.log(flow_acc / (np.tan(slope) + 1e-6))
+
+    # Planform Curvature - Identifies convergent "funnels"
+    d2z_dx2 = np.gradient(grad_x, axis=1)
+    d2z_dy2 = np.gradient(grad_y, axis=0)
+    curvature = -(d2z_dx2 + d2z_dy2)
+
+    return twi, curvature
 
 
-def _compute_flow_accumulation_tracer(dem_data):
-    """Computes flow accumulation proxy from inverse slope magnitude."""
-    grad_y, grad_x = np.gradient(dem_data)
-    slope_mag = np.sqrt(grad_x**2 + grad_y**2) + 1e-6
-    flow_proxy = 1.0 / slope_mag
-    return flow_proxy
+def _identify_pockets(twi, curvature, catchment_mask):
+    """Finds pixels where high wetness and convergence overlap."""
+    if not np.any(catchment_mask):
+        return np.zeros_like(twi, dtype=bool)
+
+    twi_thresh = np.nanpercentile(twi[catchment_mask], 90)
+    curv_thresh = np.nanpercentile(curvature[catchment_mask], 90)
+
+    # The "Pocket" is where both conditions meet
+    pockets = (twi > twi_thresh) & (curvature > curv_thresh) & catchment_mask
+    return pockets
 
 
 def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data):
-    """Extracts binary mask of catchment area upstream of the given point."""
+    """Extracts local catchment mask (1km radius buffer for proximal deposits)."""
     h, w = dem_data.shape
 
     fetch_bbox = sat_data.get("fetch_bbox", None)
@@ -109,8 +134,9 @@ def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data):
     else:
         row, col = int(h/2), int(w/2)
 
-    # Buffer-based catchment approximation
-    buffer_size = min(50, h//4, w//4)
+    # ~1km buffer for proximal quartz vein tracing
+    # SRTM is ~90m resolution, so 1km ≈ 11 pixels
+    buffer_size = min(15, h//4, w//4)
     y_min, y_max = max(0, row-buffer_size), min(h, row+buffer_size)
     x_min, x_max = max(0, col-buffer_size), min(w, col+buffer_size)
 
@@ -119,47 +145,88 @@ def _extract_upstream_catchment_tracer(flow_dir, lat, lon, dem_data, sat_data):
     return mask
 
 
-def _generate_source_targets_tracer(hmi_map, fsi_map, struct_map, catchment_mask, dem_data, sat_data):
-    """Generates target points where HMI, FSI, and Structural density converge."""
+def _generate_source_targets_tracer(twi, curvature, hmi_map, fsi_map, struct_map,
+                                      catchment_mask, pockets, dem_data, sat_data):
+    """
+    Generates target points using geometric traps (TWI + Curvature) as primary,
+    spectral indices (HMI + FSI) as secondary cross-reference.
+    """
     targets = []
 
     def norm_01(arr):
-        valid = arr[arr != -999]
+        valid = arr[arr != -999] if np.any(arr != -999) else arr
         if len(valid) == 0:
             return arr
         mn, mx = np.nanmin(valid), np.nanmax(valid)
         return (arr - mn) / (mx - mn + 1e-6)
 
+    # Normalize geometric layers
+    twi_norm = norm_01(twi.copy())
+    curv_norm = norm_01(curvature.copy())
+
+    # Normalize spectral layers (secondary)
     hmi_norm = norm_01(hmi_map.copy())
     fsi_norm = norm_01(fsi_map.copy())
     struct_norm = norm_01(struct_map.copy())
 
-    composite = (0.4 * hmi_norm) + (0.4 * fsi_norm) + (0.2 * struct_norm)
+    # Composite score: Geometric traps dominate (70%), spectral cross-ref (30%)
+    composite = (
+        0.35 * twi_norm +      # Wetness (saturated deposition zones)
+        0.35 * curv_norm +    # Convergence (funnel topography)
+        0.15 * hmi_norm +     # Heavy mineral confirmation
+        0.10 * fsi_norm +     # Mafic source rock
+        0.05 * struct_norm    # Structural pathway
+    )
     composite[~catchment_mask] = -999
-
-    threshold = np.nanpercentile(composite[composite != -999], 90)
-    hotspots = composite > threshold
 
     try:
         from scipy.ndimage import label as nd_label, center_of_mass
-        labeled, num_features = nd_label(hotspots)
+        # Use pockets mask for primary detection, fall back to composite threshold
+        if np.any(pockets):
+            labeled, num_features = nd_label(pockets)
+        else:
+            # Fallback: use composite score threshold
+            threshold = np.nanpercentile(composite[composite != -999], 90)
+            hotspots = (composite > threshold) & catchment_mask
+            labeled, num_features = nd_label(hotspots)
+
+        if num_features == 0:
+            return []
+
         fetch_bbox = sat_data.get("fetch_bbox", None)
         h, w = dem_data.shape
 
+        # Score each cluster
+        scores_per_cluster = {}
         for i in range(1, num_features + 1):
-            cy, cx = center_of_mass(labeled == i)
-            score = float(np.nanmean(composite[labeled == i]))
+            mask_i = labeled == i
+            score = float(np.nanmean(composite[mask_i]))
+            scores_per_cluster[i] = score
 
-            hmi_val = float(np.nanmean(hmi_norm[labeled == i]))
-            fsi_val = float(np.nanmean(fsi_norm[labeled == i]))
-            struct_val = float(np.nanmean(struct_norm[labeled == i]))
+        # Sort by score, take top targets
+        top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:15]
 
-            if hmi_val > fsi_val and hmi_val > struct_val:
-                source_type = "Heavy Mineral Concentration Zone"
-            elif fsi_val > hmi_val and fsi_val > struct_val:
-                source_type = "Mafic/Greenstone Bedrock Outcrop"
+        for label_id, score in top_clusters:
+            mask_i = labeled == label_id
+            cy, cx = center_of_mass(mask_i)
+
+            # Get per-cluster metrics
+            twi_val = round(float(np.nanmean(twi_norm[mask_i])), 3)
+            curv_val = round(float(np.nanmean(curv_norm[mask_i])), 3)
+            hmi_val = round(float(np.nanmean(hmi_norm[mask_i])), 3)
+            fsi_val = round(float(np.nanmean(fsi_norm[mask_i])), 3)
+            struct_val = round(float(np.nanmean(struct_norm[mask_i])), 3)
+
+            # Classify target type based on dominant geometric indicator
+            if twi_val > curv_val and twi_val > 0.5:
+                source_type = "Geometric Deposition Pocket"
+                trap_note = "High wetness zone — saturated gold deposition"
+            elif curv_val > twi_val and curv_val > 0.5:
+                source_type = "Quartz Vein Weathering Zone"
+                trap_note = "Convergent topography — vein weathering concentrate"
             else:
-                source_type = "Structural Intersection Hotspot"
+                source_type = "Mixed Geometric Trap"
+                trap_note = "Combined wetness + convergence pocket"
 
             # Convert pixel coords to lat/lon
             if fetch_bbox:
@@ -169,15 +236,20 @@ def _generate_source_targets_tracer(hmi_map, fsi_map, struct_map, catchment_mask
             else:
                 t_lon, t_lat = 0.0, 0.0
 
+            score_pct = round(score * 100, 1)
             targets.append({
                 "lat": round(t_lat, 6),
                 "lon": round(t_lon, 6),
-                "score": round(score * 100, 1),
+                "score": score_pct,
                 "source_type": source_type,
-                "hmi_score": round(hmi_val, 3),
-                "fsi_score": round(fsi_val, 3),
-                "struct_score": round(struct_val, 3)
+                "twi_score": twi_val,
+                "curvature_score": curv_val,
+                "hmi_score": hmi_val,
+                "fsi_score": fsi_val,
+                "struct_score": struct_val,
+                "trap_note": trap_note
             })
+
     except ImportError:
         pass
 

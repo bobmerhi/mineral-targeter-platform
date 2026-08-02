@@ -35,7 +35,6 @@ try:
         generate_porphyry_targets,
         generate_orogenic_targets,
         generate_rir_targets,
-        trace_alluvial_source,
     )
     from unified_selector import DEPOSIT_MODELS, get_model_config, check_sensor_availability
     from phase6_source_tracer import trace_alluvial_source
@@ -1153,6 +1152,12 @@ with st.expander("How it works", expanded=False):
     3. **Structural Analysis**: Lineament density highlights fault-controlled fluid pathways
     4. **Target Generation**: Composite scoring (40% HMI + 40% FSI + 20% Structural) pinpoints probable source outcrops
     
+    **Refined for proximal quartz vein tracing** (gold travels <1km from source)
+    
+    **Primary**: Geometric traps — TWI (wetness) + Planform Curvature (convergence)
+    **Secondary**: Spectral cross-reference — HMI (heavy minerals) + FSI (mafic source)
+    **Weights**: 35% TWI + 35% Curvature + 15% HMI + 10% FSI + 5% Structural
+    
     **Option A (Free)**: AW3D30/SRTM DEM + Sentinel-2 spectral indices
     **Option B (Paid)**: Airborne LiDAR + Drone Magnetometry for vegetated terrain
     """)
@@ -1206,6 +1211,16 @@ else:
         if "fsi_map" not in tracer_sat_data:
             if "iron_oxide_map" in tracer_sat_data:
                 tracer_sat_data["fsi_map"] = np.zeros_like(tracer_sat_data["iron_oxide_map"])
+        # DEM is now fetched in fetch_satellite_imagery and stored as dem_map
+        if dem_data_tracer is None:
+            # Try to fetch DEM on-demand if not in sat_data
+            try:
+                from georemote import fetch_dem_data
+                fb = tracer_sat_data.get("fetch_bbox")
+                if fb:
+                    dem_data_tracer = fetch_dem_data(fb, progress_cb=_trace_cb)
+            except Exception:
+                pass
         
         trace_result = trace_alluvial_source(
             float(trace_lat), float(trace_lon),
@@ -1244,6 +1259,8 @@ else:
                         "Score": t.get("score", 0),
                         "Lat": t.get("lat", 0),
                         "Lon": t.get("lon", 0),
+                        "TWI": t.get("twi_score", 0),
+                        "Curvature": t.get("curvature_score", 0),
                         "HMI": t.get("hmi_score", 0),
                         "FSI": t.get("fsi_score", 0),
                         "Struct": t.get("struct_score", 0)

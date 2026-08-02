@@ -439,7 +439,7 @@ def create_kml(targets, filename="source_trace.kml"):
         lat = t.get('lat', 0.0)
         lon = t.get('lon', 0.0)
         name = f"{t.get('source_type', 'Unknown')} (Score: {t.get('score', 0)})"
-        desc = f"HMI: {t.get('hmi_score', 0)} | FSI: {t.get('fsi_score', 0)} | Struct: {t.get('struct_score', 0)}"
+        desc = f"TWI: {t.get('twi_score', 0)} | Curvature: {t.get('curvature_score', 0)} | HMI: {t.get('hmi_score', 0)} | FSI: {t.get('fsi_score', 0)} | Struct: {t.get('struct_score', 0)}\nTrap: {t.get('trap_note', '')}"
         
         placemarks += f"""
         <Placemark>
