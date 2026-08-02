@@ -8,7 +8,7 @@ DEPOSIT_MODELS = {
         "description": "Shear-zone hosted quartz-carbonate veins. Primary control: Structure.",
         "wlc_weights": {"IO": 0.20, "Clay": 0.20, "Struct": 0.35, "Geomorph": 0.10, "Lineament": 0.15},
         "required_sensors": ["Landsat-8/9", "Sentinel-2", "AW3D30 DEM"],
-        "option_b_path": None,
+        "option_b_path": None, # Free data is sufficient for regional targeting
         "validation_focus": "Z-Score Anomaly (8-18%) + Structural Intersection Density"
     },
     "Epithermal Gold (HS/LS)": {
@@ -77,6 +77,7 @@ def check_sensor_availability(model_config, sat_data):
     required = model_config["required_sensors"]
     missing = []
     
+    # Simple heuristic checks based on data keys
     if "ASTER SWIR/TIR (Mandatory)" in required:
         if "alunite_map" not in sat_data and "phyllic_map" not in sat_data:
             missing.append("ASTER SWIR/TIR Data")
