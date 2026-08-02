@@ -160,20 +160,38 @@ def _generate_source_targets_tracer(twi, curvature, hmi_map, fsi_map, struct_map
         mn, mx = np.nanmin(valid), np.nanmax(valid)
         return (arr - mn) / (mx - mn + 1e-6)
 
-    # Normalize geometric layers
-    twi_norm = norm_01(twi.copy())
-    curv_norm = norm_01(curvature.copy())
+    # --- ROBUST NORMALIZATION WITH SHAPE ENFORCEMENT ---
+    def safe_norm(arr, reference_shape):
+        """Returns normalized array matching reference_shape exactly."""
+        if arr is None or (isinstance(arr, np.ndarray) and arr.size == 0):
+            return np.zeros(reference_shape, dtype=np.float64)
+        
+        # Handle masked arrays or NaN values
+        valid_mask = ~np.isnan(arr) & (arr != -999)
+        if not np.any(valid_mask):
+            return np.zeros(reference_shape, dtype=np.float64)
+            
+        mn = np.nanmin(arr[valid_mask])
+        mx = np.nanmax(arr[valid_mask])
+        
+        if mx == mn:
+            result = np.zeros(reference_shape, dtype=np.float64)
+        else:
+            normed = (arr.astype(np.float64) - mn) / (mx - mn + 1e-6)
+            # Ensure output matches reference shape exactly
+            result = np.zeros(reference_shape, dtype=np.float64)
+            h, w = min(normed.shape[0], reference_shape[0]), min(normed.shape[1], reference_shape[1])
+            result[:h, :w] = normed[:h, :w]
+            
+        return result
 
-    # --- SPECTRAL DATA SAFETY CHECK ---
-    # If satellite indices are missing or empty, default to zero so geometry takes priority
-    def safe_norm(arr):
-        if arr is None or not isinstance(arr, np.ndarray) or np.all(arr == 0) or np.all(arr == -999):
-            return np.zeros_like(twi_norm)
-        return norm_01(arr.copy())
-
-    hmi_norm = safe_norm(hmi_map)
-    fsi_norm = safe_norm(fsi_map)
-    struct_norm = safe_norm(struct_map)
+    # Apply with explicit shape reference from TWI (primary geometry layer)
+    ref_shape = twi.shape
+    twi_norm = safe_norm(twi, ref_shape)
+    curv_norm = safe_norm(curvature, ref_shape)
+    hmi_norm = safe_norm(hmi_map, ref_shape)
+    fsi_norm = safe_norm(fsi_map, ref_shape)
+    struct_norm = safe_norm(struct_map, ref_shape)
     # ------------------------------------
 
     # Composite Score: Heavily weighted toward Geometry for proximal tracing
