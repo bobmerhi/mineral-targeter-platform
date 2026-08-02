@@ -834,6 +834,11 @@ def fetch_dem_data(bbox, progress_cb=None):
         
         _cb(f"DEM fetched: {dem.shape[0]}x{dem.shape[1]} pixels, "
             f"elevation {float(np.nanmin(dem)):.0f}-{float(np.nanmax(dem)):.0f}m")
+        
+        # Attach geotransform for downstream pixel<->latlon conversion
+        win_transform = src.window_transform(win)
+        dem.transform = win_transform
+        dem.crs = src.crs
         return dem
         
     except Exception as e:
