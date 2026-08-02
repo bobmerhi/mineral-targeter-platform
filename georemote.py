@@ -7,6 +7,23 @@ import numpy as np
 import re
 import math
 import warnings
+
+
+class GeoArray(np.ndarray):
+    """numpy.ndarray subclass that allows attaching a rasterio affine transform + CRS.
+    Plain numpy arrays don't support arbitrary attribute assignment — this fixes that
+    so DEM arrays can carry their georeferencing through the pipeline."""
+    def __new__(cls, input_array, transform=None, crs=None):
+        obj = np.asarray(input_array).view(cls)
+        obj.transform = transform
+        obj.crs = crs
+        return obj
+
+    def __array_finalize__(self, obj):
+        if obj is None:
+            return
+        self.transform = getattr(obj, 'transform', None)
+        self.crs = getattr(obj, 'crs', None)
 # Suppress SSL warnings from INAMI/Landfolio servers (self-signed certs)
 try:
     import urllib3
@@ -836,10 +853,9 @@ def fetch_dem_data(bbox, progress_cb=None):
             f"elevation {float(np.nanmin(dem)):.0f}-{float(np.nanmax(dem)):.0f}m")
         
         # Attach geotransform for downstream pixel<->latlon conversion
+        # (plain numpy arrays can't hold extra attributes — use GeoArray subclass)
         win_transform = src.window_transform(win)
-        dem.transform = win_transform
-        dem.crs = src.crs
-        return dem
+        return GeoArray(dem, transform=win_transform, crs=src.crs)
         
     except Exception as e:
         _cb(f"DEM fetch error: {e}. Using synthetic terrain.")
