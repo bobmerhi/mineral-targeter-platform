@@ -1,0 +1,22 @@
+# Secrets — NEVER commit these
+.streamlit/secrets.toml
+.env
+*.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Generated data files
+*.npz
+*.kml
+*.kmz
+!boundaries.kml
+*.png
+*.jpg
+*.tiff
+*.pdf
+
+# OS files
+.DS_Store
+Thumbs.db
