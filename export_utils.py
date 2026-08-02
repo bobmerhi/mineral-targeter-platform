@@ -425,3 +425,30 @@ def create_png_bundle(sat_data):
             zf.writestr(f"{img_name}.png", png_bytes)
     buf.seek(0)
     return buf.getvalue()
+# ==============================================================================
+# PHASE 6: KML EXPORT FOR ALLUVIAL SOURCE TRACER
+# ==============================================================================
+
+def create_kml(targets, filename="source_trace.kml"):
+    """Generates a KML string for Google Earth from a list of target dictionaries."""
+    kml_header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
+    kml_footer = '</Document>\n</kml>'
+    placemarks = ""
+    
+    for t in targets:
+        lat = t.get('lat', 0.0)
+        lon = t.get('lon', 0.0)
+        name = f"{t.get('source_type', 'Unknown')} (Score: {t.get('score', 0)})"
+        desc = f"HMI: {t.get('hmi_score', 0)} | FSI: {t.get('fsi_score', 0)} | Struct: {t.get('struct_score', 0)}"
+        
+        placemarks += f"""
+        <Placemark>
+            <name>{name}</name>
+            <description>{desc}</description>
+            <Point>
+                <coordinates>{lon},{lat},0</coordinates>
+            </Point>
+        </Placemark>
+        """
+        
+    return (kml_header + placemarks + kml_footer).encode('utf-8')
