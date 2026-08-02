@@ -91,19 +91,25 @@ import json
 # ================================================================
 
 # ================================================================
-# WATSONX
+# WATSONX (optional — site works without it, only AI reports need it)
 # ================================================================
+WATSONX_AVAILABLE = False
+IBM_API_KEY = None
+PROJECT_ID = None
+credentials = None
+
 try:
     IBM_API_KEY = st.secrets["WATSONX_APIKEY"]
     PROJECT_ID  = st.secrets["WATSONX_PROJECT_ID"]
+    credentials = {"url": "https://us-south.ml.cloud.ibm.com", "apikey": IBM_API_KEY}
+    WATSONX_AVAILABLE = True
 except KeyError:
-    st.error("Streamlit Secrets missing: WATSONX_APIKEY / WATSONX_PROJECT_ID")
-    st.stop()
-
-credentials = {"url": "https://us-south.ml.cloud.ibm.com", "apikey": IBM_API_KEY}
+    pass  # Watsonx not configured — AI geological reports will be unavailable
 
 @st.cache_resource
 def get_watsonx_client():
+    if not WATSONX_AVAILABLE:
+        return None
     client = APIClient(credentials=credentials)
     client.set.default_project(PROJECT_ID)
     return client
@@ -1588,6 +1594,9 @@ if st.button("📋 Generate Comprehensive Geological Synthesis Report",
         st.warning("⚠️ Por favor preencha o campo 'Prepared by' antes de gerar o relatório.", icon="⚠️")
         st.stop()
     
+    if not WATSONX_AVAILABLE:
+        st.warning("⚠️ Watsonx AI não configurado. Adicione WATSONX_APIKEY e WATSONX_PROJECT_ID nas Secrets do Streamlit Cloud para gerar relatórios geológicos com IA.")
+        st.stop()
     with st.spinner("watsonx.ai a processar analise geologica completa..."):
         client = get_watsonx_client()
         meta = st.session_state["concession_metadata"]
