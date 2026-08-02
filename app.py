@@ -10,7 +10,9 @@ import os
 # Google Elevation API key — read from Streamlit Cloud secrets (set via web UI)
 # NEVER hardcode API keys in source code — repo is public
 try:
-    os.environ.setdefault("GOOGLE_API_KEY", st.secrets["GOOGLE_API_KEY"])
+    _gkey = st.secrets.get("GOOGLE_API_KEY") or st.secrets.get("google_api_key")
+    if _gkey:
+        os.environ["GOOGLE_API_KEY"] = _gkey
 except Exception:
     pass  # Key not configured; Google Elevation API will be unavailable
 st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")

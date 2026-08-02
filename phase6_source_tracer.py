@@ -209,12 +209,16 @@ def _calculate_geometric_traps(dem_data):
     return twi, curvature
 
 
-def _identify_pockets(twi, curvature, catchment_mask):
-    """High TWI + convergent curvature = deposition pockets."""
+def _identify_pockets(twi, curvature, catchment_mask, px_size_m=30.0):
+    """High TWI + convergent curvature = deposition pockets.
+    Adaptive thresholds based on DEM resolution — coarser DEMs need
+    lower percentile thresholds and smaller minimum pocket sizes."""
     if not np.any(catchment_mask):
         return np.zeros_like(twi, dtype=bool)
-    twi_thresh = np.nanpercentile(twi[catchment_mask], 90)
-    curv_thresh = np.nanpercentile(curvature[catchment_mask], 90)
+    # Coarse DEM (90m+): use 75th percentile; fine DEM (5-30m): use 90th
+    pct = 75 if px_size_m >= 60 else 85
+    twi_thresh = np.nanpercentile(twi[catchment_mask], pct)
+    curv_thresh = np.nanpercentile(curvature[catchment_mask], pct)
     return (twi > twi_thresh) & (curvature > curv_thresh) & catchment_mask
 
 
@@ -301,7 +305,7 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon,
     twi, curvature = _calculate_geometric_traps(dem_data)
     
     _cb("Step 4: Identifying deposition pockets...")
-    pockets = _identify_pockets(twi, curvature, catchment_mask)
+    pockets = _identify_pockets(twi, curvature, catchment_mask, px_size_m=px_size_m)
     
     # Spectral data (optional)
     hmi_raw = sat_data.get("hmi_map", sat_data.get("iron_oxide_map", None)) if sat_data else None
@@ -313,7 +317,8 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon,
     
     for i in range(1, num_pockets + 1):
         pocket_pixels = np.where(labeled_pockets == i)
-        if len(pocket_pixels[0]) < 5:
+        min_pixels = 5 if px_size_m <= 30 else 2  # Coarse DEM: allow smaller pockets
+        if len(pocket_pixels[0]) < min_pixels:
             continue
         
         mean_twi = float(np.nanmean(twi[pocket_pixels]))
