@@ -1110,38 +1110,38 @@ _saved_lon = st.session_state.get("tracer_lon")
 if _saved_result and _saved_targets and _saved_lat is not None:
     _render_tracer_downloads(_saved_targets, _saved_result, _saved_lat, _saved_lon)
 
-    # Render results in main body
-    if trace_result.get("status") == "option_b_required":
-        st.error("⚠️ No DEM data available for geometric tracing")
-        st.info(f"""
-        **Option B (Paid Upgrade) Required**
+# Render results in main body
+if trace_result.get("status") == "option_b_required":
+    st.error("⚠️ No DEM data available for geometric tracing")
+    st.info(f"""
+    **Option B (Paid Upgrade) Required**
 
-        - **LiDAR Bare Earth**: Strips vegetation to reveal micro-topography (${trace_result.get('cost_estimate_usd_per_km2', 12)}/km²)
-        - **Drone Magnetometry**: Maps subsurface heavy minerals under cover
-        - **Accuracy Gain**: {trace_result.get('accuracy_free', '<40%')} → {trace_result.get('accuracy_paid', '>85%')}
-        - **Delivery**: {trace_result.get('delivery_weeks', 2)} weeks
-        """)
+    - **LiDAR Bare Earth**: Strips vegetation to reveal micro-topography (${trace_result.get('cost_estimate_usd_per_km2', 12)}/km²)
+    - **Drone Magnetometry**: Maps subsurface heavy minerals under cover
+    - **Accuracy Gain**: {trace_result.get('accuracy_free', '<40%')} → {trace_result.get('accuracy_paid', '>85%')}
+    - **Delivery**: {trace_result.get('delivery_weeks', 2)} weeks
+    """)
 
-    elif trace_result.get("status") == "success":
-        targets_st = trace_result.get("targets", [])
+elif trace_result.get("status") == "success":
+    targets_st = trace_result.get("targets", [])
 
-        if not targets_st:
-            st.warning("No source targets identified. Try adjusting coordinates.")
-        else:
-            st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
-
-            # Persist ALL trace results in session_state so download buttons
-            # survive Streamlit reruns (each download_button click = full page rerun)
-            st.session_state["tracer_streams"] = trace_result.get("stream_polylines", [])
-            st.session_state["tracer_targets"] = targets_st
-            st.session_state["tracer_trace_result"] = trace_result
-            st.session_state["tracer_lat"] = float(trace_lat)
-            st.session_state["tracer_lon"] = float(trace_lon)
-
-            _render_tracer_downloads(targets_st, trace_result, trace_lat, trace_lon)
-
+    if not targets_st:
+        st.warning("No source targets identified. Try adjusting coordinates.")
     else:
-        st.error(f"Trace failed: {trace_result}")
+        st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
+
+        # Persist ALL trace results in session_state so download buttons
+        # survive Streamlit reruns (each download_button click = full page rerun)
+        st.session_state["tracer_streams"] = trace_result.get("stream_polylines", [])
+        st.session_state["tracer_targets"] = targets_st
+        st.session_state["tracer_trace_result"] = trace_result
+        st.session_state["tracer_lat"] = float(trace_lat)
+        st.session_state["tracer_lon"] = float(trace_lon)
+
+        _render_tracer_downloads(targets_st, trace_result, trace_lat, trace_lon)
+
+else:
+    st.error(f"Trace failed: {trace_result}")
 
 
 
