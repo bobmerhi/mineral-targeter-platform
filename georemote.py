@@ -2507,8 +2507,15 @@ def fetch_google_elevation(center_lat, center_lon, radius_m=500, spacing_m=5,
             progress_cb(msg)
     
     api_key = os.environ.get(api_key_env)
+    # Also check Streamlit secrets (Streamlit Cloud stores keys there)
     if not api_key:
-        _cb("⚠️ No Google API key found. Falling back to Copernicus DEM.")
+        try:
+            import streamlit as st
+            api_key = st.secrets.get("GOOGLE_API_KEY") or st.secrets.get("google_api_key")
+        except Exception:
+            pass
+    if not api_key:
+        _cb("⚠️ No Google API key found in env or Streamlit secrets. Falling back to Copernicus DEM.")
         return None
     
     # Generate circular grid points
