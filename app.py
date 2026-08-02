@@ -33,7 +33,10 @@ try:
         generate_placer_targets,
         fetch_aster_porphyry_indices,
         generate_porphyry_targets,
+        generate_orogenic_targets,
+        generate_rir_targets,
     )
+    from unified_selector import DEPOSIT_MODELS, get_model_config, check_sensor_availability
 except Exception as _georemote_err:
     import traceback as _tb
     st.error(f"Failed to import georemote: {type(_georemote_err).__name__}: {_georemote_err}")
@@ -161,6 +164,9 @@ DEFAULTS = {
     "placer_data": None,
     "porphyry_targets": None,
     "porphyry_data": None,
+    "unified_targets": None,
+    "active_model_id": "orogenic_gold",
+    "active_model_name": "Orogenic Gold (Vein-Hosted)",
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
     "name_search_results": None,
@@ -515,10 +521,12 @@ with col2:
                     log.markdown("\n".join(f"✅ {s}" for s in steps))
                     
                     st.session_state["satellite_data"]      = result
+                    active_model = st.session_state.get("active_model_id", "orogenic_gold")
                     st.session_state["exploration_targets"] = generate_exploration_targets(
                         result, 
                         polygon_geojson=st.session_state.get("active_polygon"),
-                        target_commodity=target_commodity
+                        target_commodity=target_commodity,
+                        active_model_id=active_model
                     )
                     st.session_state["m_data"] = {
                         "Way_1_Iron_Oxide_Gossan":  result["Way_1_Iron_Oxide_Gossan"],
@@ -874,323 +882,163 @@ with exp2_c2:
 
 
 # ================================================================
-# PHASE 2: EPITHERMAL GOLD ACTIVATION (ASTER SWIR)
-# Based on: White & Hedenquist (1995), Pour & Hashim (2012)
+# UNIFIED MODE SELECTOR (5 Deposit Models)
+# Replaces individual Phase 2/3/4 buttons with intelligent dropdown
 # ================================================================
 st.markdown("---")
-st.markdown("## Phase 2: Epithermal Gold Activation (ASTER SWIR)")
+st.markdown("## Unified Deposit Model Selector")
 
-sat_data_p2 = st.session_state.get("satellite_data")
-m_data_p2 = st.session_state.get("m_data")
+sat_data_um = st.session_state.get("satellite_data")
+m_data_um = st.session_state.get("m_data")
 
-if sat_data_p2 and m_data_p2:
-    ep_col1, ep_col2 = st.columns([2, 1])
+if sat_data_um and m_data_um:
+    # 1. Unified Dropdown
+    selected_mode_name = st.selectbox(
+        "Select Exploration Target Model",
+        options=list(DEPOSIT_MODELS.keys()),
+        index=0,
+        help="Choose the genetic deposit type to activate specific WLC weights and sensor requirements."
+    )
     
-    with ep_col2:
-        epithermal_year = st.number_input(
-            "ASTER Scene Year",
-            min_value=2000, max_value=2026, value=2024,
-            help="Year to search for ASTER L1T scenes (cloud cover < 20%)"
+    model_config = get_model_config(selected_mode_name)
+    st.session_state["active_model_id"] = model_config["id"]
+    st.session_state["active_model_name"] = selected_mode_name
+    
+    # 2. Dynamic Configuration Display
+    with st.expander(f"📋 Model: {selected_mode_name} — Specifications & Weights", expanded=True):
+        st.markdown(f"**Description:** {model_config['description']}")
+        st.markdown("**WLC Weighting Formula:**")
+        weights_str = " + ".join([f"{k}({v})" for k, v in model_config['wlc_weights'].items()])
+        st.code(weights_str, language="text")
+        
+        st.markdown("**Required Sensors (Option A - Free):**")
+        for sensor in model_config['required_sensors']:
+            st.write(f"- {sensor}")
+            
+        st.markdown(f"**Validation Focus:** {model_config['validation_focus']}")
+    
+    # 3. Option B Upgrade Path
+    if model_config['option_b_path']:
+        st.markdown("### ⚠️ Data Limitation Detected")
+        st.info(f"For highest accuracy in **{selected_mode_name}**, free satellite data may be insufficient.")
+        
+        upgrade = model_config['option_b_path']
+        cost_display = upgrade.get('cost_usd', upgrade.get('cost_usd_per_km2', 'N/A'))
+        cost_label = f"${cost_display}" if isinstance(cost_display, (int, float)) else cost_display
+        if 'cost_usd_per_km2' in upgrade:
+            cost_label += "/km2"
+        
+        st.markdown(f"""
+        **Recommended Upgrade (Option B):**
+        - **Method:** {upgrade['name']}
+        - **Accuracy Gain:** {upgrade['accuracy_gain']}
+        - **Est. Cost:** {cost_label}
+        - **Delivery:** {upgrade['delivery_weeks']} weeks
+        """)
+    
+    # 4. Analysis Execution
+    um_col1, um_col2 = st.columns([2, 1])
+    
+    with um_col2:
+        max_um_targets = st.slider("Max Targets", 3, 25, 12, key="unified_max_targets")
+        um_year = st.number_input(
+            "ASTER Scene Year", min_value=2000, max_value=2026, value=2024,
+            key="unified_aster_year",
+            help="Year for ASTER scene search (cloud cover < 20%). Used for Epithermal/Porphyry models."
         )
-        max_ep_targets = st.slider("Max Epithermal Targets", 3, 25, 12)
     
-    with ep_col1:
-        if st.button("Activate Epithermal Analysis", type="primary", use_container_width=True):
-            ep_progress = st.empty()
-            ep_status = st.empty()
+    with um_col1:
+        if st.button("🚀 Run Analysis for Selected Model", type="primary", use_container_width=True):
+            um_status = st.empty()
+            active_model_id = model_config["id"]
+            active_poly_um = st.session_state.get("active_polygon")
             
-            def _ep_cb(msg):
-                ep_status.text(msg)
-            
-            with st.spinner("Fetching ASTER SWIR data for epithermal indicators..."):
-                lat_c = m_data_p2.get("centroid_lat", m_data_p2.get("lat"))
-                lon_c = m_data_p2.get("centroid_lon", m_data_p2.get("lon"))
-                fetch_bbox_p2 = sat_data_p2.get("fetch_bbox")
-                
-                ep_result = fetch_aster_swir_gold_indices(
-                    lat_c, lon_c, int(epithermal_year),
-                    bbox=fetch_bbox_p2, progress_cb=_ep_cb
-                )
-            
-            if ep_result.get("status") == "option_b_required":
-                st.warning("No free ASTER data available for this location/year.")
-                st.info(
-                    f"**Paid Upgrade Path Available**\n"
-                    f"- Method: {ep_result.get('upgrade_path', 'hyperspectral_pima')}\n"
-                    f"- Free accuracy: {ep_result.get('accuracy_free', 'N/A')}\n"
-                    f"- Paid accuracy: {ep_result.get('accuracy_paid', 'N/A')}\n"
-                    f"- Cost estimate: ${ep_result.get('cost_estimate_usd', 1200)}\n"
-                    f"- Delivery: {ep_result.get('delivery_weeks', 3)} weeks"
-                )
-            elif ep_result.get("status") == "error":
-                st.error(f"ASTER fetch error: {ep_result.get('reason', 'Unknown')}")
-            elif ep_result.get("status") == "success":
-                st.success(f"ASTER scene: {ep_result.get('scene_id', '?')} (cloud: {ep_result.get('cloud_cover', 0):.1f}%)")
-                
-                # Merge epithermal indices into sat_data for target generation
-                sat_data_ep = {**sat_data_p2, **{
-                    "alunite_map": ep_result["alunite_map"],
-                    "kaolinite_map": ep_result["kaolinite_map"],
-                    "sericite_map": ep_result["sericite_map"],
-                    "quartz_proxy_map": ep_result["quartz_proxy_map"],
-                }}
-                
-                with st.spinner("Generating epithermal targets (White & Hedenquist 1995 WLC)..."):
-                    active_poly_p2 = st.session_state.get("active_polygon")
-                    ep_targets = generate_epithermal_targets(
-                        sat_data_ep, max_targets=max_ep_targets,
-                        polygon_geojson=active_poly_p2
-                    )
-                
-                if ep_targets:
-                    st.session_state["epithermal_targets"] = ep_targets
-                    st.session_state["epithermal_data"] = ep_result
+            with st.spinner(f"Running {selected_mode_name} analysis..."):
+                # For models requiring ASTER, fetch ASTER data first
+                if active_model_id in ("epithermal_gold", "copper_porphyry"):
+                    lat_um = m_data_um.get("centroid_lat", m_data_um.get("lat"))
+                    lon_um = m_data_um.get("centroid_lon", m_data_um.get("lon"))
+                    fetch_bbox_um = sat_data_um.get("fetch_bbox")
                     
-                    # Show mineral index values
-                    idx_col1, idx_col2, idx_col3, idx_col4 = st.columns(4)
-                    with idx_col1:
-                        st.metric("Alunite (HS)", ep_result.get("alunite_val", 0))
-                    with idx_col2:
-                        st.metric("Kaolinite", ep_result.get("kaolinite_val", 0))
-                    with idx_col3:
-                        st.metric("Sericite (LS)", ep_result.get("sericite_val", 0))
-                    with idx_col4:
-                        st.metric("Quartz Proxy", ep_result.get("quartz_proxy_val", 0))
+                    if active_model_id == "epithermal_gold":
+                        um_status.text("Fetching ASTER SWIR for epithermal indices...")
+                        ast_result = fetch_aster_swir_gold_indices(
+                            lat_um, lon_um, int(um_year), bbox=fetch_bbox_um
+                        )
+                    else:
+                        um_status.text("Fetching ASTER SWIR/TIR for porphyry indices...")
+                        ast_result = fetch_aster_porphyry_indices(
+                            lat_um, lon_um, int(um_year), bbox=fetch_bbox_um
+                        )
                     
-                    st.info(f"Generated **{len(ep_targets)}** epithermal targets")
+                    if ast_result.get("status") == "option_b_required":
+                        st.warning(f"No free ASTER data. Paid upgrade: {ast_result.get('upgrade_path', 'N/A')}")
+                        st.info(f"Cost: ${ast_result.get('cost_estimate_usd', ast_result.get('cost_estimate_usd_per_km2', 'N/A'))} | Delivery: {ast_result.get('delivery_weeks', 'N/A')} weeks")
+                    elif ast_result.get("status") == "success":
+                        # Merge ASTER data into sat_data
+                        sat_data_um = {**sat_data_um, **ast_result}
+                        um_status.text(f"ASTER scene: {ast_result.get('scene_id', '?')} (cloud: {ast_result.get('cloud_cover', 0):.1f}%)")
+                        
+                        um_targets = generate_exploration_targets(
+                            sat_data_um, max_targets=max_um_targets,
+                            polygon_geojson=active_poly_um,
+                            active_model_id=active_model_id
+                        )
+                        st.session_state["unified_targets"] = um_targets
+                        st.session_state["unified_sat_data"] = sat_data_um
+                    elif ast_result.get("status") == "error":
+                        st.error(f"ASTER error: {ast_result.get('reason', 'Unknown')}")
+                
+                elif active_model_id == "placer_gold":
+                    um_status.text("Computing placer indices (HMI + TRI + Flow)...")
+                    dem_data_um = sat_data_um.get("dem_map")
+                    pl_result = compute_placer_indices(sat_data_um, dem_data=dem_data_um)
+                    
+                    if pl_result.get("status") == "option_b_required":
+                        st.warning("No DEM data. Paid upgrade: LiDAR + Drone Mag")
+                        st.info(f"Cost: ${pl_result.get('cost_estimate_usd_per_km2', 12)}/km2 | Delivery: {pl_result.get('delivery_weeks', 2)} weeks")
+                    elif pl_result.get("status") == "success":
+                        pl_result["fetch_bbox"] = sat_data_um.get("fetch_bbox")
+                        um_targets = generate_placer_targets(
+                            pl_result, max_targets=max_um_targets,
+                            polygon_geojson=active_poly_um
+                        )
+                        st.session_state["unified_targets"] = um_targets
+                    else:
+                        st.error(f"Placer error: {pl_result.get('reason', 'Unknown')}")
+                
                 else:
-                    st.warning("No epithermal targets found in this area.")
-    
-    # Display epithermal targets if available
-    ep_targets_display = st.session_state.get("epithermal_targets")
-    if ep_targets_display:
-        st.markdown("### Epithermal Target Zones")
-        
-        for t in ep_targets_display:
-            style_color = "🔴" if "High" in t["structural_control"] else ("🔵" if "Low" in t["structural_control"] else "🟡")
-            with st.expander(f"{style_color} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
-                tc1, tc2, tc3 = st.columns(3)
-                with tc1:
-                    st.metric("Alunite", t["alunite_score"])
-                    st.metric("Kaolinite", t["kaolinite_score"])
-                with tc2:
-                    st.metric("Sericite", t["sericite_score"])
-                    st.metric("Quartz Proxy", t["quartz_score"])
-                with tc3:
-                    st.metric("Structural", t["struct_score"])
-                    st.metric("Radius (m)", t["radius_m"])
-                
-                st.markdown(f"**Lithology:** {t['lithology']}")
-                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
-                st.markdown(f"**EN:** {t['description_en']}")
-                st.caption(f"**PT:** {t['description_pt']}")
-else:
-    st.info("Run Phase 1 satellite analysis first to enable epithermal activation.")
-
-
-# ================================================================
-# PHASE 3: PLACER GOLD MODULE (Geomorphology-First)
-# Based on: Amiri et al. (2005), Robert et al. (2007)
-# ================================================================
-st.markdown("---")
-st.markdown("## Phase 3: Placer Gold (Geomorphology-First)")
-
-sat_data_p3 = st.session_state.get("satellite_data")
-m_data_p3 = st.session_state.get("m_data")
-
-if sat_data_p3 and m_data_p3:
-    pl_col1, pl_col2 = st.columns([2, 1])
-    
-    with pl_col2:
-        max_pl_targets = st.slider("Max Placer Targets", 3, 25, 12)
-    
-    with pl_col1:
-        if st.button("Activate Placer Analysis", type="primary", use_container_width=True):
-            pl_progress = st.empty()
-            pl_status = st.empty()
-            
-            def _pl_cb(msg):
-                pl_status.text(msg)
-            
-            with st.spinner("Computing placer indices (HMI + TRI + Flow Accumulation)..."):
-                # Use SRTM DEM from sat_data if available, else None triggers Option B
-                dem_data_p3 = sat_data_p3.get("dem_map")
-                
-                pl_result = compute_placer_indices(
-                    sat_data_p3, dem_data=dem_data_p3, progress_cb=_pl_cb
-                )
-            
-            if pl_result.get("status") == "option_b_required":
-                st.warning("No DEM data available for placer analysis.")
-                st.info(
-                    f"**Paid Upgrade Path Available**\n"
-                    f"- Method: {pl_result.get('upgrade_path', 'lidar_drone_mag')}\n"
-                    f"- Free accuracy: {pl_result.get('accuracy_free', 'N/A')}\n"
-                    f"- Paid accuracy: {pl_result.get('accuracy_paid', 'N/A')}\n"
-                    f"- Cost estimate: ${pl_result.get('cost_estimate_usd_per_km2', 12)}/km2\n"
-                    f"- Delivery: {pl_result.get('delivery_weeks', 2)} weeks"
-                )
-            elif pl_result.get("status") == "error":
-                st.error(f"Placer analysis error: {pl_result.get('reason', 'Unknown')}")
-            elif pl_result.get("status") == "success":
-                st.success("Placer indices computed from Sentinel-2 + DEM (FREE)")
-                
-                # Add fetch_bbox from sat_data for coordinate extraction
-                pl_result["fetch_bbox"] = sat_data_p3.get("fetch_bbox")
-                
-                with st.spinner("Generating placer targets (Amiri et al. 2005 WLC)..."):
-                    active_poly_p3 = st.session_state.get("active_polygon")
-                    pl_targets = generate_placer_targets(
-                        pl_result, max_targets=max_pl_targets,
-                        polygon_geojson=active_poly_p3
+                    # Orogenic or RIR — use existing sat_data
+                    um_targets = generate_exploration_targets(
+                        sat_data_um, max_targets=max_um_targets,
+                        polygon_geojson=active_poly_um,
+                        active_model_id=active_model_id
                     )
-                
-                if pl_targets:
-                    st.session_state["placer_targets"] = pl_targets
-                    st.session_state["placer_data"] = pl_result
-                    
-                    # Show placer index values
-                    idx_col1, idx_col2, idx_col3 = st.columns(3)
-                    with idx_col1:
-                        st.metric("Heavy Mineral Index", pl_result.get("hmi_val", 0))
-                    with idx_col2:
-                        st.metric("Terrain Ruggedness", pl_result.get("tri_val", 0))
-                    with idx_col3:
-                        st.metric("Flow Accumulation", pl_result.get("flow_val", 0))
-                    
-                    st.info(f"Generated **{len(pl_targets)}** placer targets")
-                else:
-                    st.warning("No placer targets found in this area.")
+                    st.session_state["unified_targets"] = um_targets
     
-    # Display placer targets if available
-    pl_targets_display = st.session_state.get("placer_targets")
-    if pl_targets_display:
-        st.markdown("### Placer Target Zones")
+    # 5. Display targets
+    um_targets_display = st.session_state.get("unified_targets")
+    if um_targets_display:
+        st.markdown(f"### Target Zones ({selected_mode_name})")
+        st.info(f"Generated **{len(um_targets_display)}** targets")
         
-        for t in pl_targets_display:
-            trap_color = "🟤" if "Heavy Mineral" in t["structural_control"] else ("🌊" if "Paleochannel" in t["structural_control"] else "🏞️")
-            with st.expander(f"{trap_color} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
-                tc1, tc2 = st.columns(2)
-                with tc1:
-                    st.metric("HMI Score", t["hmi_score"])
-                    st.metric("Flow Score", t["flow_score"])
-                with tc2:
-                    st.metric("Slope Score", t["slope_score"])
-                    st.metric("TRI Score", t["tri_score"])
+        for t in um_targets_display:
+            model_icon = "🔴" if "High" in t.get("priority", "") else ("🟡" if "Medium" in t.get("priority", "") else "🔵")
+            with st.expander(f"{model_icon} {t['id']} - Score: {t['score']}% - {t.get('structural_control', t.get('lithology', 'N/A'))}", expanded=False):
+                # Show all numeric scores dynamically
+                score_keys = [k for k in t.keys() if k.endswith("_score") or k in ("radius_m", "lat", "lon")]
+                if score_keys:
+                    sc_cols = st.columns(min(len(score_keys), 5))
+                    for i, k in enumerate(score_keys[:5]):
+                        with sc_cols[i]:
+                            st.metric(k.replace("_", " ").title(), t[k])
                 
-                st.markdown(f"**Lithology:** {t['lithology']}")
-                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
-                st.markdown(f"**EN:** {t['description_en']}")
-                st.caption(f"**PT:** {t['description_pt']}")
+                st.markdown(f"**Lithology:** {t.get('lithology', 'N/A')}")
+                st.markdown(f"**Coordinates:** {t.get('lat', 'N/A')}, {t.get('lon', 'N/A')}")
+                st.markdown(f"**EN:** {t.get('description_en', 'N/A')}")
+                st.caption(f"**PT:** {t.get('description_pt', 'N/A')}")
 else:
-    st.info("Run Phase 1 satellite analysis first to enable placer targeting.")
-
-
-# ================================================================
-# PHASE 4: COPPER PORPHYRY ACTIVATION (ASTER SWIR/TIR)
-# Based on: Pour & Hashim (2012), Lowell & Guilbert (1970)
-# ================================================================
-st.markdown("---")
-st.markdown("## Phase 4: Copper Porphyry Activation")
-
-sat_data_p4 = st.session_state.get("satellite_data")
-m_data_p4 = st.session_state.get("m_data")
-
-if sat_data_p4 and m_data_p4:
-    pp_col1, pp_col2 = st.columns([2, 1])
-    
-    with pp_col2:
-        porphyry_year = st.number_input(
-            "ASTER Scene Year (Porphyry)",
-            min_value=2000, max_value=2026, value=2024,
-            key="porphyry_year_input"
-        )
-        max_pp_targets = st.slider("Max Porphyry Targets", 3, 25, 12, key="porphyry_slider")
-    
-    with pp_col1:
-        if st.button("Activate Porphyry Analysis", type="primary", use_container_width=True):
-            pp_progress = st.empty()
-            pp_status = st.empty()
-            
-            def _pp_cb(msg):
-                pp_status.text(msg)
-            
-            with st.spinner("Fetching ASTER SWIR/TIR for porphyry alteration zones..."):
-                lat_c4 = m_data_p4.get("centroid_lat", m_data_p4.get("lat"))
-                lon_c4 = m_data_p4.get("centroid_lon", m_data_p4.get("lon"))
-                fetch_bbox_p4 = sat_data_p4.get("fetch_bbox")
-                
-                pp_result = fetch_aster_porphyry_indices(
-                    lat_c4, lon_c4, int(porphyry_year),
-                    bbox=fetch_bbox_p4, progress_cb=_pp_cb
-                )
-            
-            if pp_result.get("status") == "option_b_required":
-                st.warning("No free ASTER data available for porphyry analysis.")
-                st.info(
-                    f"**Paid Upgrade Path Available**\n"
-                    f"- Method: {pp_result.get('upgrade_path', 'radiometrics_mt_tem')}\n"
-                    f"- Free accuracy: {pp_result.get('accuracy_free', 'N/A')}\n"
-                    f"- Paid accuracy: {pp_result.get('accuracy_paid', 'N/A')}\n"
-                    f"- Cost estimate: ${pp_result.get('cost_estimate_usd_per_km2', 25)}/km2\n"
-                    f"- Delivery: {pp_result.get('delivery_weeks', 4)} weeks"
-                )
-            elif pp_result.get("status") == "error":
-                st.error(f"Porphyry fetch error: {pp_result.get('reason', 'Unknown')}")
-            elif pp_result.get("status") == "success":
-                st.success(f"ASTER scene: {pp_result.get('scene_id', '?')} (cloud: {pp_result.get('cloud_cover', 0):.1f}%)")
-                
-                with st.spinner("Generating porphyry targets (Pour & Hashim 2012 + Lowell & Guilbert 1970)..."):
-                    active_poly_p4 = st.session_state.get("active_polygon")
-                    pp_targets = generate_porphyry_targets(
-                        pp_result, max_targets=max_pp_targets,
-                        polygon_geojson=active_poly_p4
-                    )
-                
-                if pp_targets:
-                    st.session_state["porphyry_targets"] = pp_targets
-                    st.session_state["porphyry_data"] = pp_result
-                    
-                    pp_idx1, pp_idx2, pp_idx3, pp_idx4, pp_idx5 = st.columns(5)
-                    with pp_idx1:
-                        st.metric("Phyllic", pp_result.get("phyllic_val", 0))
-                    with pp_idx2:
-                        st.metric("Argillic", pp_result.get("argillic_val", 0))
-                    with pp_idx3:
-                        st.metric("Propylitic", pp_result.get("propylitic_val", 0))
-                    with pp_idx4:
-                        st.metric("Quartz (TIR)", pp_result.get("quartz_val", 0))
-                    with pp_idx5:
-                        st.metric("Iron Oxide", "N/A")
-                    
-                    st.info(f"Generated **{len(pp_targets)}** porphyry targets")
-                else:
-                    st.warning("No porphyry targets found in this area.")
-    
-    # Display porphyry targets
-    pp_targets_display = st.session_state.get("porphyry_targets")
-    if pp_targets_display:
-        st.markdown("### Porphyry Target Zones")
-        
-        for t in pp_targets_display:
-            zone_icon = "🟢" if "Phyllic" in t["structural_control"] else ("🔴" if "Potassic" in t["structural_control"] else ("🟡" if "Argillic" in t["structural_control"] else "🔵"))
-            with st.expander(f"{zone_icon} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
-                tc1, tc2 = st.columns(2)
-                with tc1:
-                    st.metric("Phyllic Score", t["phyllic_score"])
-                    st.metric("Quartz Score", t["quartz_score"])
-                    st.metric("Argillic Score", t["argillic_score"])
-                with tc2:
-                    st.metric("Propylitic Score", t["propylitic_score"])
-                    st.metric("Iron Oxide Score", t["io_score"])
-                    st.metric("Radius (m)", t["radius_m"])
-                
-                st.markdown(f"**Lithology:** {t['lithology']}")
-                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
-                st.markdown(f"**EN:** {t['description_en']}")
-                st.caption(f"**PT:** {t['description_pt']}")
-else:
-    st.info("Run Phase 1 satellite analysis first to enable porphyry targeting.")
+    st.info("Run Phase 1 satellite analysis first to enable the Unified Mode Selector.")
 
 # ================================================================
 # IBM WATSONX GEOLOGICAL REPORT

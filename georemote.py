@@ -572,7 +572,7 @@ def _infer_structural_control(orientations):
         return f"{top1_name} + {top2_name} intersection"
     return f"{top1_name} lineament intersection zone"
 
-def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None, target_commodity=None):
+def generate_orogenic_targets(sat_data, max_targets=12, polygon_geojson=None, target_commodity=None):
     """Generate exploration targets with commodity-aware WLC scoring."""
     try:
         from scipy.ndimage import label as nd_label, center_of_mass
@@ -2227,6 +2227,205 @@ def generate_porphyry_targets(porphyry_data, max_targets=12, polygon_geojson=Non
             "argillic_score": argillic_s,
             "propylitic_score": propylitic_s,
             "io_score": io_s,
+            "description_en": desc_en,
+            "description_pt": desc_pt,
+        })
+    
+    return targets
+
+
+# ==============================================================================
+# UNIFIED MODE SELECTOR ROUTER
+# ==============================================================================
+
+def generate_exploration_targets(sat_data, max_targets=12, polygon_geojson=None, 
+                                 target_commodity=None, active_model_id="orogenic_gold"):
+    """
+    Router function that dispatches to specific model generators based on active_model_id.
+    """
+    if active_model_id == "epithermal_gold":
+        return generate_epithermal_targets(sat_data, max_targets, polygon_geojson)
+    elif active_model_id == "placer_gold":
+        return generate_placer_targets(sat_data, max_targets, polygon_geojson)
+    elif active_model_id == "copper_porphyry":
+        return generate_porphyry_targets(sat_data, max_targets, polygon_geojson)
+    elif active_model_id == "rir_gold":
+        return generate_rir_targets(sat_data, max_targets, polygon_geojson)
+    else:
+        # Default: Orogenic Gold (Phase 1)
+        return generate_orogenic_targets(sat_data, max_targets, polygon_geojson, target_commodity)
+
+
+def generate_rir_targets(sat_data, max_targets=12, polygon_geojson=None):
+    """
+    Reduced Intrusion-Related Gold targeting.
+    Granite-hosted sheeted veins with Au-Bi-Te-As signature.
+    WLC: IO 0.15 + Clay 0.15 + Struct 0.30 + Geomorph 0.10 + Lineament 0.10 + K-Feldspar 0.20
+    
+    Note: K-Feldspar proxy uses quartz_index as approximation until dedicated ASTER TIR
+    K-feldspar index is implemented. Structural control weighted highest per RIR model.
+    """
+    try:
+        from scipy.ndimage import label as nd_label, center_of_mass, gaussian_filter
+    except ImportError:
+        nd_label = None
+        center_of_mass = None
+        gaussian_filter = None
+    
+    h, w = sat_data["iron_oxide_map"].shape
+    fetch_bbox = sat_data.get("fetch_bbox")
+    
+    # Build polygon mask
+    poly_mask = None
+    if polygon_geojson and fetch_bbox:
+        from matplotlib.path import Path
+        lon_min, lat_min, lon_max, lat_max = fetch_bbox
+        ys, xs = np.mgrid[:h, :w]
+        grid = np.column_stack([xs.ravel(), ys.ravel()])
+        mask = np.zeros(h * w, dtype=bool)
+        for ring in polygon_geojson["geometry"]["coordinates"]:
+            verts_px = []
+            for p in ring:
+                px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                verts_px.append((px, py))
+            path = Path(verts_px)
+            mask |= path.contains_points(grid)
+        poly_mask = mask.reshape(h, w)
+    if poly_mask is None:
+        poly_mask = np.ones((h, w), dtype=bool)
+    
+    def norm_01(arr):
+        mn, mx = np.nanmin(arr), np.nanmax(arr)
+        return (arr - mn) / (mx - mn + 1e-6)
+    
+    io_norm = norm_01(sat_data["iron_oxide_map"])
+    struct = norm_01(sat_data.get("lineament_density_map", np.zeros((h, w))))
+    geomorph = norm_01(sat_data["false_color"][:, :, 0].astype(np.float64))
+    line_int = norm_01(sat_data.get("intersection_map", np.zeros((h, w))))
+    
+    # Clay alteration
+    clay_raw = sat_data.get("clay_map", np.zeros((h, w)))
+    clay_norm = norm_01(clay_raw)
+    
+    # K-Feldspar proxy from quartz index (ASTER TIR if available, else false_color channel)
+    kfeldspar_raw = sat_data.get("quartz_index_map", sat_data["false_color"][:, :, 2].astype(np.float64))
+    kfeldspar_norm = norm_01(kfeldspar_raw)
+    
+    # RIR WLC FORMULA
+    composite = (
+        0.15 * io_norm +
+        0.15 * clay_norm +
+        0.30 * struct +
+        0.10 * geomorph +
+        0.10 * line_int +
+        0.20 * kfeldspar_norm
+    )
+    
+    composite_masked = composite.copy()
+    composite_masked[~poly_mask] = -999
+    
+    if gaussian_filter:
+        composite_smooth = gaussian_filter(
+            np.where(composite_masked > -998, composite_masked, 0), sigma=2
+        )
+        composite_smooth[~poly_mask] = -999
+    else:
+        composite_smooth = composite_masked
+    
+    inside_vals = composite_smooth[poly_mask]
+    if len(inside_vals) == 0:
+        return []
+    
+    threshold_high = np.nanpercentile(inside_vals, 90)
+    threshold_med = np.nanpercentile(inside_vals, 75)
+    
+    if nd_label is None or center_of_mass is None:
+        return []
+    
+    binary = (composite_smooth > threshold_med) & poly_mask
+    labeled, num_features = nd_label(binary)
+    if num_features == 0:
+        return []
+    
+    scores_per_cluster = {}
+    for label_id in range(1, num_features + 1):
+        mask = labeled == label_id
+        score = float(np.nanmean(composite_smooth[mask]))
+        scores_per_cluster[label_id] = score
+    
+    top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:max_targets]
+    
+    if fetch_bbox:
+        lat_min_p, lon_min_p = fetch_bbox[1], fetch_bbox[0]
+        lat_max_p, lon_max_p = fetch_bbox[3], fetch_bbox[2]
+    else:
+        lat_min_p, lon_min_p, lat_max_p, lon_max_p = 0, 0, 1, 1
+    
+    targets = []
+    
+    for label_id, score in top_clusters:
+        cy, cx = center_of_mass(labeled == label_id)
+        lat = lat_max_p - (cy / h) * (lat_max_p - lat_min_p)
+        lon = lon_min_p + (cx / w) * (lon_max_p - lon_min_p)
+        
+        priority = "HIGH" if score >= threshold_high else ("MEDIUM" if score >= threshold_med else "LOW")
+        
+        cluster_mask = labeled == label_id
+        cluster_size = int(np.sum(cluster_mask))
+        
+        io_s = round(float(np.nanmean(io_norm[cluster_mask])), 3)
+        struct_s = round(float(np.nanmean(struct[cluster_mask])), 3)
+        clay_s = round(float(np.nanmean(clay_norm[cluster_mask])), 3)
+        kfeld_s = round(float(np.nanmean(kfeldspar_norm[cluster_mask])), 3)
+        
+        if struct_s > kfeld_s and struct_s > io_s:
+            zone_type = "Granite Contact / Sheeted Vein Zone"
+            lithology = "Sheeted quartz veins in reduced granite (Au-Bi-Te-As)"
+        elif kfeld_s > struct_s:
+            zone_type = "K-Feldspar Rich Core"
+            lithology = "Potassic altered granite (K-feldspar megacrysts)"
+        else:
+            zone_type = "Iron Oxide + Clay Anomaly"
+            lithology = "Oxidized vein system with argillic alteration"
+        
+        radius_m = max(50, min(500, int(np.sqrt(cluster_size)) * 30))
+        lat_pad = 0.004
+        lon_pad = lat_pad * 1.2
+        ring = [
+            [lon - lon_pad, lat - lat_pad],
+            [lon + lon_pad, lat - lat_pad],
+            [lon + lon_pad, lat + lat_pad],
+            [lon - lon_pad, lat + lat_pad],
+            [lon - lon_pad, lat - lat_pad],
+        ]
+        
+        score_pct = round(score * 100, 1)
+        desc_en = (
+            f"[RIR-{zone_type.upper()}] Target zone with composite score {score_pct}%. "
+            f"Struct={struct_s}, K-Feldspar={kfeld_s}, IO={io_s}, Clay={clay_s}. "
+            f"Lithology: {lithology}."
+        )
+        desc_pt = (
+            f"[RIR-{zone_type.upper()}] Zona alvo com score composto {score_pct}%. "
+            f"Estrutural={struct_s}, K-Feldspato={kfeld_s}, IO={io_s}, Argila={clay_s}. "
+            f"Litologia: {lithology}."
+        )
+        
+        targets.append({
+            "id": f"RIR-T-{len(targets)+1:02d}",
+            "score": score_pct,
+            "priority": priority,
+            "structural_control": zone_type,
+            "lithology": lithology,
+            "radius_m": radius_m,
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+            "polygon": ring,
+            "io_score": io_s,
+            "struct_score": struct_s,
+            "clay_score": clay_s,
+            "kfeldspar_score": kfeld_s,
             "description_en": desc_en,
             "description_pt": desc_pt,
         })
