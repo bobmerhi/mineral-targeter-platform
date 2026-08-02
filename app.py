@@ -7,20 +7,19 @@ import streamlit as st
 from datetime import datetime
 import os
 
+# st.set_page_config MUST be the first Streamlit command — before st.secrets
+st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
+
 # Google Elevation API key — read from Streamlit Cloud secrets (set via web UI)
 # NEVER hardcode API keys in source code — repo is public
 try:
     _gkey = st.secrets["GOOGLE_API_KEY"]
 except KeyError:
-    try:
-        _gkey = st.secrets["google_api_key"]
-    except KeyError:
-        _gkey = None
+    _gkey = None
 except Exception:
     _gkey = None
 if _gkey:
     os.environ["GOOGLE_API_KEY"] = _gkey
-st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
 import folium
 from streamlit_folium import st_folium
 try:
