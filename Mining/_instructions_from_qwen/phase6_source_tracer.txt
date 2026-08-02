@@ -1,0 +1,26 @@
+# PHASE 6: ALLUVIAL SOURCE TRACER MODULE
+# ==============================================================================
+# Implements "Pathfinder to Source" tracing based on Amiri et al. (2005) 
+# and Robert et al. (2007). Uses DEM-based flow accumulation and spectral 
+# lithology matching to identify primary bedrock sources from alluvial points.
+# Option A (Free): AW3D30/SRTM DEM + Sentinel-2 Spectral Indices.
+# Option B (Paid): Airborne LiDAR (Bare Earth) + Drone Magnetometry.
+# ==============================================================================
+
+# Key Implementation Notes:
+# 1. Option B Enforcement: When trace_alluvial_source() returns "status": "option_b_required",
+#    the frontend MUST display the LiDAR/Drone Mag upgrade modal.
+# 2. Hydrological Routing: _compute_flow_direction() and _compute_flow_accumulation() are 
+#    simplified placeholders. For production, integrate richdem or whitebox-tools for D8/D-infinity.
+# 3. Coordinate Conversion: Target coordinates use sat_data["fetch_bbox"] for pixel-to-lat/lon.
+# 4. Spectral Matching: HMI (Heavy Mineral Index) + FSI (Ferrous Silicate Index) for source lithology.
+# 5. Catchment Extraction: Buffer-based approximation; needs recursive upstream traversal for precision.
+# 6. Weights: 0.4 HMI + 0.4 FSI + 0.2 Structural density in composite scoring.
+
+# References:
+# - Amiri et al. (2005): Alluvial gold pathfinder techniques using remote sensing
+# - Robert et al. (2007): Drainage basin analysis for source tracing
+# - White & Hedenquist (1995): Epithermal gold environments (background context)
+
+# Status: DEPLOYED to beta-gold-restructure branch (2026-08-02)
+# Processed by: Solas (Base44 Superagent)

@@ -35,6 +35,7 @@ try:
         generate_porphyry_targets,
         generate_orogenic_targets,
         generate_rir_targets,
+        trace_alluvial_source,
     )
     from unified_selector import DEPOSIT_MODELS, get_model_config, check_sensor_availability
 except Exception as _georemote_err:
