@@ -1058,60 +1058,79 @@ if trace_btn:
         else:
             st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
 
-            # Store for map overlay
+            # Persist ALL trace results in session_state so download buttons
+            # survive Streamlit reruns (each download_button click = full page rerun)
             st.session_state["tracer_streams"] = trace_result.get("stream_polylines", [])
             st.session_state["tracer_targets"] = targets_st
+            st.session_state["tracer_trace_result"] = trace_result
+            st.session_state["tracer_lat"] = float(trace_lat)
+            st.session_state["tracer_lon"] = float(trace_lon)
 
-            st.markdown("### 🔍 Phase 6: Probable Source Targets")
-            target_data_st = []
-            for i, t in enumerate(targets_st, 1):
-                target_data_st.append({
-                    "#": i,
-                    "Type": t.get("source_type", "Unknown"),
-                    "Score": t.get("score", 0),
-                    "Lat": t.get("lat", 0),
-                    "Lon": t.get("lon", 0),
-                    "TWI": t.get("twi_score", 0),
-                    "Curvature": t.get("curvature_score", 0),
-                    "Wetness (TWI)": t.get("twi_score", 0),
-                    "Convergence (Curv)": t.get("curvature_score", 0),
-                    "Struct": t.get("struct_score", 0)
-                })
-            st.dataframe(target_data_st, use_container_width=True, hide_index=True)
-
-            kml_bytes = create_kml(targets_st, stream_polylines=trace_result.get("stream_polylines"))
-            st.download_button(
-                "🌐 Download Source Targets (KML for Google Earth)",
-                data=kml_bytes,
-                file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.kml",
-                mime="application/vnd.google-earth.kml+xml",
-                use_container_width=True
-            )
-            st.caption("Open in Google Earth to view probable bedrock source locations with scores and mineral indices")
-
-            # GPS Export — Garmin/handheld devices
-            gpx_bytes = create_gpx(targets_st, stream_polylines=trace_result.get("stream_polylines"))
-            st.download_button(
-                "📡 Exportar para GPS Portátil (GPX — Garmin)",
-                data=gpx_bytes,
-                file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.gpx",
-                mime="application/gpx+xml",
-                use_container_width=True
-            )
-            st.caption("Importe para Garmin BaseCamp ou transfira diretamente para GPSMAP/Etrex/Montana")
-
-            csv_bytes = create_csv(targets_st, stream_polylines=trace_result.get("stream_polylines"))
-            st.download_button(
-                "📋 Exportar Waypoints (CSV — Universal)",
-                data=csv_bytes,
-                file_name=f"alluvial_waypoints_{trace_lat:.4f}_{trace_lon:.4f}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-            st.caption("Compatível com QGIS, Garmin BaseCamp e outros softwares GPS")
+            _render_tracer_downloads(targets_st, trace_result, trace_lat, trace_lon)
 
     else:
         st.error(f"Trace failed: {trace_result}")
+
+# ── Persistent download section (renders from session_state on reruns) ──
+# This survives download button clicks which trigger Streamlit page reruns
+def _render_tracer_downloads(targets_st, trace_result, trace_lat, trace_lon):
+    """Render the targets table + all 3 export buttons."""
+    st.markdown("### 🔍 Phase 6: Probable Source Targets")
+    target_data_st = []
+    for i, t in enumerate(targets_st, 1):
+        target_data_st.append({
+            "#": i,
+            "Type": t.get("source_type", "Unknown"),
+            "Score": t.get("score", 0),
+            "Lat": t.get("lat", 0),
+            "Lon": t.get("lon", 0),
+            "TWI": t.get("twi_score", 0),
+            "Curvature": t.get("curvature_score", 0),
+            "Wetness (TWI)": t.get("twi_score", 0),
+            "Convergence (Curv)": t.get("curvature_score", 0),
+            "Struct": t.get("struct_score", 0)
+        })
+    st.dataframe(target_data_st, use_container_width=True, hide_index=True)
+
+    streams = trace_result.get("stream_polylines", [])
+    kml_bytes = create_kml(targets_st, stream_polylines=streams)
+    st.download_button(
+        "🌐 Download Source Targets (KML for Google Earth)",
+        data=kml_bytes,
+        file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.kml",
+        mime="application/vnd.google-earth.kml+xml",
+        use_container_width=True
+    )
+    st.caption("Open in Google Earth to view probable bedrock source locations with scores and mineral indices")
+
+    gpx_bytes = create_gpx(targets_st, stream_polylines=streams)
+    st.download_button(
+        "📡 Exportar para GPS Portátil (GPX — Garmin)",
+        data=gpx_bytes,
+        file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.gpx",
+        mime="application/gpx+xml",
+        use_container_width=True
+    )
+    st.caption("Importe para Garmin BaseCamp ou transfira diretamente para GPSMAP/Etrex/Montana")
+
+    csv_bytes = create_csv(targets_st, stream_polylines=streams)
+    st.download_button(
+        "📋 Exportar Waypoints (CSV — Universal)",
+        data=csv_bytes,
+        file_name=f"alluvial_waypoints_{trace_lat:.4f}_{trace_lon:.4f}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+    st.caption("Compatível com QGIS, Garmin BaseCamp e outros softwares GPS")
+
+
+# Render persistent downloads from session_state (survives button click reruns)
+_saved_result = st.session_state.get("tracer_trace_result")
+_saved_targets = st.session_state.get("tracer_targets")
+_saved_lat = st.session_state.get("tracer_lat")
+_saved_lon = st.session_state.get("tracer_lon")
+if _saved_result and _saved_targets and _saved_lat is not None:
+    _render_tracer_downloads(_saved_targets, _saved_result, _saved_lat, _saved_lon)
 
 
 # UNIFIED MODE SELECTOR (5 Deposit Models)
