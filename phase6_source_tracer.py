@@ -10,6 +10,59 @@
 
 import numpy as np
 import warnings
+
+
+def _pixel_to_lat_lon(row, col, dem_shape, sat_data):
+    """Converts pixel coordinates to lat/lon using fetch_bbox from sat_data."""
+    h, w = dem_shape
+    fetch_bbox = sat_data.get("fetch_bbox") if sat_data else None
+    if fetch_bbox:
+        min_lon, min_lat, max_lon, max_lat = fetch_bbox
+        lon = min_lon + (col / max(w - 1, 1)) * (max_lon - min_lon)
+        lat = max_lat - (row / max(h - 1, 1)) * (max_lat - min_lat)
+        return lat, lon
+    return None, None
+
+
+def _extract_stream_network(flow_acc, dem_shape, sat_data, threshold_percentile=95):
+    """
+    Extracts stream network as polylines from flow accumulation raster.
+    Returns list of [lon, lat] coordinate lists for each stream segment.
+    """
+    valid_acc = flow_acc[flow_acc > 0]
+    if len(valid_acc) == 0:
+        return []
+
+    threshold = np.percentile(valid_acc, threshold_percentile)
+    stream_mask = flow_acc >= threshold
+
+    from scipy.ndimage import label
+
+    labeled, num_segments = label(stream_mask)
+    polylines = []
+
+    for i in range(1, num_segments + 1):
+        segment_pixels = np.where(labeled == i)
+        if len(segment_pixels[0]) < 20:  # Filter noise
+            continue
+
+        rows, cols = segment_pixels
+        # Sort by row then column to form a rough line
+        sorted_idx = np.lexsort((cols, rows))
+        sorted_rows = rows[sorted_idx]
+        sorted_cols = cols[sorted_idx]
+
+        polyline = []
+        for r, c in zip(sorted_rows, sorted_cols):
+            lat, lon = _pixel_to_lat_lon(r, c, dem_shape, sat_data)
+            if lat is not None and lon is not None:
+                polyline.append([lon, lat])  # KML uses lon,lat order
+
+        if len(polyline) >= 2:
+            polylines.append(polyline)
+
+    return polylines
+
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 
 
@@ -54,6 +107,14 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, de
     catchment_mask = _extract_upstream_catchment_tracer(
         None, confirmed_point_lat, confirmed_point_lon, dem_data, sat_data)
 
+    # 2b. EXTRACT FULL STREAM NETWORK
+    _cb("Step 2b: Extracting full stream network (upstream + downstream)...")
+    grad_y_sn, grad_x_sn = np.gradient(dem_data)
+    slope_sn = np.arctan(np.sqrt(grad_x_sn**2 + grad_y_sn**2))
+    flow_acc_sn = 1.0 / (slope_sn + 1e-6)
+    stream_polylines = _extract_stream_network(flow_acc_sn, dem_data.shape, sat_data)
+    _cb(f"Found {len(stream_polylines)} stream segments")
+
     # 3. IDENTIFY GEOMETRIC POCKETS
     _cb("Step 3: Identifying deposition pockets (high TWI + high convergence)...")
     pockets = _identify_pockets(twi, curvature, catchment_mask)
@@ -79,6 +140,7 @@ def trace_alluvial_source(confirmed_point_lat, confirmed_point_lon, sat_data, de
         "curvature_map": curvature,
         "pockets_mask": pockets,
         "targets": targets,
+        "stream_polylines": stream_polylines,
         "data_source": "AW3D30/SRTM + Sentinel-2 (FREE)"
     }
 

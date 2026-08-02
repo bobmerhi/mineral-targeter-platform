@@ -429,12 +429,46 @@ def create_png_bundle(sat_data):
 # PHASE 6: KML EXPORT FOR ALLUVIAL SOURCE TRACER
 # ==============================================================================
 
-def create_kml(targets, filename="source_trace.kml"):
-    """Generates a KML string for Google Earth from a list of target dictionaries."""
+def create_kml(targets, filename="source_trace.kml", stream_polylines=None):
+    """Generates a KML string for Google Earth from target dicts + optional stream network."""
     kml_header = '<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
+    
+    # Stream network style (blue lines)
+    kml_header += """
+<Style id="streamStyle">
+    <LineStyle>
+        <color>ffff0000</color>
+        <width>4</width>
+    </LineStyle>
+</Style>
+<Style id="targetStyle">
+    <IconStyle>
+        <color>ffffff00</color>
+        <scale>1.2</scale>
+        <Icon><href>http://maps.google.com/mapfiles/kml/paddle/ylw-circle.png</href></Icon>
+    </IconStyle>
+</Style>
+"""
+    
     kml_footer = '</Document>\n</kml>'
     placemarks = ""
     
+    # Add stream network polylines first (background layer)
+    if stream_polylines:
+        for idx, line in enumerate(stream_polylines):
+            coords_str = " ".join([f"{lon},{lat},0" for lon, lat in line])
+            placemarks += f"""
+        <Placemark>
+            <name>Stream Segment {idx+1}</name>
+            <styleUrl>#streamStyle</styleUrl>
+            <LineString>
+                <tessellate>1</tessellate>
+                <coordinates>{coords_str}</coordinates>
+            </LineString>
+        </Placemark>
+        """
+    
+    # Add target placemarks (foreground layer)
     for t in targets:
         lat = t.get('lat', 0.0)
         lon = t.get('lon', 0.0)
@@ -445,6 +479,7 @@ def create_kml(targets, filename="source_trace.kml"):
         <Placemark>
             <name>{name}</name>
             <description>{desc}</description>
+            <styleUrl>#targetStyle</styleUrl>
             <Point>
                 <coordinates>{lon},{lat},0</coordinates>
             </Point>

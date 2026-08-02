@@ -391,18 +391,28 @@ st.sidebar.divider()
 st.sidebar.header("📍 Phase 6: Source Tracer")
 st.sidebar.caption("Geometric tracing (TWI + Curvature) for proximal quartz vein sources (<1km)")
 
-trace_lat = st.sidebar.number_input(
-    "Alluvial Point — Latitude",
-    min_value=-27.0, max_value=-10.0,
-    value=-15.0, format="%.6f",
-    help="Latitude of confirmed alluvial gold occurrence")
-trace_lon = st.sidebar.number_input(
-    "Alluvial Point — Longitude",
-    min_value=30.0, max_value=42.0,
-    value=37.0, format="%.6f",
-    help="Longitude of confirmed alluvial gold occurrence")
+trace_coord_text = st.sidebar.text_area(
+    "Alluvial Point Coordinates",
+    placeholder="-15.395531, 31.416193",
+    help="Same format as 'Coordinates + Radius' search: lat, lon")
 
-trace_btn = st.sidebar.button("🔍 Trace Source", type="primary", use_container_width=True, key="trace_source_btn")
+trace_lat = None
+trace_lon = None
+if trace_coord_text:
+    try:
+        parts = [p.strip() for p in trace_coord_text.split(',')]
+        if len(parts) == 2:
+            trace_lat, trace_lon = float(parts[0]), float(parts[1])
+            if not (-27.0 <= trace_lat <= -10.0 and 30.0 <= trace_lon <= 42.0):
+                st.sidebar.error("Coordinates outside Mozambique. Lat: -27 to -10 | Lon: 30 to 42")
+                trace_lat = trace_lon = None
+        else:
+            st.sidebar.warning("Provide exactly one coordinate pair: lat, lon")
+    except ValueError:
+        st.sidebar.error("Invalid coordinates. Use: latitude, longitude")
+
+trace_btn = st.sidebar.button("🔍 Trace Source", type="primary", use_container_width=True, key="trace_source_btn",
+    disabled=(trace_lat is None or trace_lon is None))
 
 st.sidebar.divider()
 target_commodity = st.sidebar.selectbox(
@@ -987,7 +997,7 @@ if trace_btn:
                 })
             st.dataframe(target_data_st, use_container_width=True, hide_index=True)
 
-            kml_bytes = create_kml(targets_st)
+            kml_bytes = create_kml(targets_st, stream_polylines=trace_result.get("stream_polylines"))
             st.download_button(
                 "🌐 Download Source Targets (KML for Google Earth)",
                 data=kml_bytes,
