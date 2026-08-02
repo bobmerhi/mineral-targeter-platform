@@ -7,12 +7,12 @@ import streamlit as st
 from datetime import datetime
 import os
 
-# Google Elevation API key — injected into os.environ for fetch_google_elevation()
-# Try Streamlit secrets first, then fall back to hardcoded key for private repo
+# Google Elevation API key — read from Streamlit Cloud secrets (set via web UI)
+# NEVER hardcode API keys in source code — repo is public
 try:
     os.environ.setdefault("GOOGLE_API_KEY", st.secrets["GOOGLE_API_KEY"])
 except Exception:
-    os.environ.setdefault("GOOGLE_API_KEY", "AIzaSyAbG4sux4CJoaN34PLBQ99eMzFO_UxTNH8")
+    pass  # Key not configured; Google Elevation API will be unavailable
 st.set_page_config(page_title="SatIntel Moçambique Real-Time AI", layout="wide")
 import folium
 from streamlit_folium import st_folium
