@@ -62,6 +62,8 @@ try:
         create_png_bundle,
         create_targets_kmz,
         create_kml,
+        create_gpx,
+        create_csv,
     )
 except Exception as _export_err:
     import traceback as _tb
@@ -1086,6 +1088,27 @@ if trace_btn:
                 use_container_width=True
             )
             st.caption("Open in Google Earth to view probable bedrock source locations with scores and mineral indices")
+
+            # GPS Export — Garmin/handheld devices
+            gpx_bytes = create_gpx(targets_st, stream_polylines=trace_result.get("stream_polylines"))
+            st.download_button(
+                "📡 Exportar para GPS Portátil (GPX — Garmin)",
+                data=gpx_bytes,
+                file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.gpx",
+                mime="application/gpx+xml",
+                use_container_width=True
+            )
+            st.caption("Importe para Garmin BaseCamp ou transfira diretamente para GPSMAP/Etrex/Montana")
+
+            csv_bytes = create_csv(targets_st, stream_polylines=trace_result.get("stream_polylines"))
+            st.download_button(
+                "📋 Exportar Waypoints (CSV — Universal)",
+                data=csv_bytes,
+                file_name=f"alluvial_waypoints_{trace_lat:.4f}_{trace_lon:.4f}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            st.caption("Compatível com QGIS, Garmin BaseCamp e outros softwares GPS")
 
     else:
         st.error(f"Trace failed: {trace_result}")

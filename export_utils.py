@@ -488,3 +488,126 @@ def create_kml(targets, filename="source_trace.kml", stream_polylines=None):
     
     kml += '</Document>\n</kml>'
     return kml.encode('utf-8')
+
+
+def create_gpx(targets, stream_polylines=None, filename="alluvial_source_trace.gpx"):
+    """Generates GPX 1.1 file for Garmin/handheld GPS devices.
+    
+    Waypoints for targets + track segments for stream network.
+    Compatible with Garmin GPSMAP, Etrex, Montana, and most field GPS units.
+    """
+    from datetime import datetime, timezone
+    
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    
+    gpx = '<?xml version="1.0" encoding="UTF-8"?>\n'
+    gpx += '<gpx version="1.1" creator="GeoRemote Phase 6"\n'
+    gpx += '     xmlns="http://www.topografix.com/GPX/1/1"\n'
+    gpx += '     xmlns:gpxx="http://www.garmin.com/xmlschemas/GpxExtensions/v3"\n'
+    gpx += '     xmlns:wptx1="http://www.garmin.com/xmlschemas/WaypointExtension/v1"\n'
+    gpx += '     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n'
+    gpx += '     xsi:schemaLocation="http://www.topografix.com/GPX/1/1\n'
+    gpx += '     http://www.topografix.com/GPX/1/1/gpx.xsd">\n'
+    gpx += f'  <metadata>\n'
+    gpx += f'    <name>Alluvial Source Trace</name>\n'
+    gpx += f'    <desc>Rastreador de Fonte Aluvial - Generated {ts}</desc>\n'
+    gpx += f'    <time>{ts}</time>\n'
+    gpx += f'  </metadata>\n'
+    
+    # Waypoints for each target
+    for i, t in enumerate(targets, 1):
+        lat = float(t.get('lat', 0.0))
+        lon = float(t.get('lon', 0.0))
+        ele = float(t.get('elevation', 0.0)) if t.get('elevation') else None
+        score = t.get('score', 0)
+        stype = t.get('source_type', 'Target')
+        twi = t.get('twi_score', 0)
+        curv = t.get('curvature_score', 0)
+        
+        # Short name for GPS display (max ~14 chars on most Garmin units)
+        short_name = f"T{i:02d} S{score:.0f}"
+        
+        gpx += f'  <wpt lat="{lat:.6f}" lon="{lon:.6f}">\n'
+        if ele:
+            gpx += f'    <ele>{ele:.1f}</ele>\n'
+        gpx += f'    <time>{ts}</time>\n'
+        gpx += f'    <name>{short_name}</name>\n'
+        gpx += f'    <desc>{stype} | TWI:{twi} Curv:{curv} Score:{score}</desc>\n'
+        gpx += f'    <sym>Waypoint</sym>\n'
+        gpx += f'    <type>Geocache</type>\n'
+        # Garmin extension for display color
+        gpx += f'    <extensions>\n'
+        gpx += f'      <gpxx:WaypointExtension>\n'
+        gpx += f'        <gpxx:DisplayColor>Yellow</gpxx:DisplayColor>\n'
+        gpx += f'      </gpxx:WaypointExtension>\n'
+        gpx += f'    </extensions>\n'
+        gpx += f'  </wpt>\n'
+    
+    # Track for stream network (blue lines on GPS)
+    if stream_polylines:
+        gpx += '  <trk>\n'
+        gpx += '    <name>Rede de Drenagem</name>\n'
+        gpx += '    <desc>Stream network from D8 flow routing</desc>\n'
+        gpx += '    <extensions>\n'
+        gpx += '      <gpxx:TrackExtension>\n'
+        gpx += '        <gpxx:DisplayColor>Blue</gpxx:DisplayColor>\n'
+        gpx += '      </gpxx:TrackExtension>\n'
+        gpx += '    </extensions>\n'
+        
+        for idx, line in enumerate(stream_polylines):
+            if len(line) < 2:
+                continue
+            gpx += f'    <trkseg>\n'
+            for lon, lat in line:
+                gpx += f'      <trkpt lat="{float(lat):.6f}" lon="{float(lon):.6f}">\n'
+                gpx += f'        <time>{ts}</time>\n'
+                gpx += f'      </trkpt>\n'
+            gpx += f'    </trkseg>\n'
+        
+        gpx += '  </trk>\n'
+    
+    gpx += '</gpx>\n'
+    return gpx.encode("utf-8")
+
+
+def create_csv(targets, stream_polylines=None):
+    """Generates CSV file with waypoints for universal GPS import.
+    
+    Compatible with Garmin BaseCamp, QGIS, and most GPS software.
+    """
+    import csv
+    import io
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Header
+    writer.writerow(["Number", "Name", "Latitude", "Longitude", "Elevation", 
+                      "Type", "Score", "TWI", "Curvature", "Notes"])
+    
+    # Target waypoints
+    for i, t in enumerate(targets, 1):
+        writer.writerow([
+            i,
+            f"Target_{i:02d}",
+            f"{float(t.get('lat', 0.0)):.6f}",
+            f"{float(t.get('lon', 0.0)):.6f}",
+            f"{float(t.get('elevation', 0.0)):.1f}" if t.get('elevation') else "",
+            t.get('source_type', 'Unknown'),
+            t.get('score', 0),
+            t.get('twi_score', 0),
+            t.get('curvature_score', 0),
+            t.get('trap_note', '')
+        ])
+    
+    # Stream segment endpoints as additional waypoints
+    if stream_polylines:
+        writer.writerow([])
+        writer.writerow(["Stream Network Points (use as track reference)"])
+        writer.writerow(["Segment", "Point", "Latitude", "Longitude"])
+        for idx, line in enumerate(stream_polylines, 1):
+            for j, (lon, lat) in enumerate(line, 1):
+                writer.writerow([f"Seg{idx:02d}", f"P{j:03d}", 
+                                f"{float(lat):.6f}", f"{float(lon):.6f}"])
+    
+    return output.getvalue().encode("utf-8")
