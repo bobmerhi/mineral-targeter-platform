@@ -1,4 +1,5 @@
 import warnings
+# Phase 6: Alluvial Source Tracer — Google Elevation API integration
 warnings.filterwarnings("ignore", message="Unverified HTTPS request")
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -37,7 +38,8 @@ try:
         generate_rir_targets,
     )
     from unified_selector import DEPOSIT_MODELS, get_model_config, check_sensor_availability
-    from phase6_source_tracer import trace_alluvial_source
+    # [Deploy trigger: Google Elevation API integration v2]
+from phase6_source_tracer import trace_alluvial_source
 except Exception as _georemote_err:
     import traceback as _tb
     st.error(f"Failed to import georemote: {type(_georemote_err).__name__}: {_georemote_err}")
