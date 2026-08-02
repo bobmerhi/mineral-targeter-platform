@@ -38,8 +38,8 @@ try:
         generate_rir_targets,
     )
     from unified_selector import DEPOSIT_MODELS, get_model_config, check_sensor_availability
-    # [Deploy trigger: Google Elevation API integration v2]
-from phase6_source_tracer import trace_alluvial_source
+    # Deploy: Google Elevation API integration
+    from phase6_source_tracer import trace_alluvial_source
 except Exception as _georemote_err:
     import traceback as _tb
     st.error(f"Failed to import georemote: {type(_georemote_err).__name__}: {_georemote_err}")
