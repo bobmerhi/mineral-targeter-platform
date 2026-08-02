@@ -31,6 +31,8 @@ try:
         generate_epithermal_targets,
         compute_placer_indices,
         generate_placer_targets,
+        fetch_aster_porphyry_indices,
+        generate_porphyry_targets,
     )
 except Exception as _georemote_err:
     import traceback as _tb
@@ -157,6 +159,8 @@ DEFAULTS = {
     "epithermal_data": None,
     "placer_targets": None,
     "placer_data": None,
+    "porphyry_targets": None,
+    "porphyry_data": None,
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
     "name_search_results": None,
@@ -1080,6 +1084,113 @@ if sat_data_p3 and m_data_p3:
                 st.caption(f"**PT:** {t['description_pt']}")
 else:
     st.info("Run Phase 1 satellite analysis first to enable placer targeting.")
+
+
+# ================================================================
+# PHASE 4: COPPER PORPHYRY ACTIVATION (ASTER SWIR/TIR)
+# Based on: Pour & Hashim (2012), Lowell & Guilbert (1970)
+# ================================================================
+st.markdown("---")
+st.markdown("## Phase 4: Copper Porphyry Activation")
+
+sat_data_p4 = st.session_state.get("satellite_data")
+m_data_p4 = st.session_state.get("m_data")
+
+if sat_data_p4 and m_data_p4:
+    pp_col1, pp_col2 = st.columns([2, 1])
+    
+    with pp_col2:
+        porphyry_year = st.number_input(
+            "ASTER Scene Year (Porphyry)",
+            min_value=2000, max_value=2026, value=2024,
+            key="porphyry_year_input"
+        )
+        max_pp_targets = st.slider("Max Porphyry Targets", 3, 25, 12, key="porphyry_slider")
+    
+    with pp_col1:
+        if st.button("Activate Porphyry Analysis", type="primary", use_container_width=True):
+            pp_progress = st.empty()
+            pp_status = st.empty()
+            
+            def _pp_cb(msg):
+                pp_status.text(msg)
+            
+            with st.spinner("Fetching ASTER SWIR/TIR for porphyry alteration zones..."):
+                lat_c4 = m_data_p4.get("centroid_lat", m_data_p4.get("lat"))
+                lon_c4 = m_data_p4.get("centroid_lon", m_data_p4.get("lon"))
+                fetch_bbox_p4 = sat_data_p4.get("fetch_bbox")
+                
+                pp_result = fetch_aster_porphyry_indices(
+                    lat_c4, lon_c4, int(porphyry_year),
+                    bbox=fetch_bbox_p4, progress_cb=_pp_cb
+                )
+            
+            if pp_result.get("status") == "option_b_required":
+                st.warning("No free ASTER data available for porphyry analysis.")
+                st.info(
+                    f"**Paid Upgrade Path Available**\n"
+                    f"- Method: {pp_result.get('upgrade_path', 'radiometrics_mt_tem')}\n"
+                    f"- Free accuracy: {pp_result.get('accuracy_free', 'N/A')}\n"
+                    f"- Paid accuracy: {pp_result.get('accuracy_paid', 'N/A')}\n"
+                    f"- Cost estimate: ${pp_result.get('cost_estimate_usd_per_km2', 25)}/km2\n"
+                    f"- Delivery: {pp_result.get('delivery_weeks', 4)} weeks"
+                )
+            elif pp_result.get("status") == "error":
+                st.error(f"Porphyry fetch error: {pp_result.get('reason', 'Unknown')}")
+            elif pp_result.get("status") == "success":
+                st.success(f"ASTER scene: {pp_result.get('scene_id', '?')} (cloud: {pp_result.get('cloud_cover', 0):.1f}%)")
+                
+                with st.spinner("Generating porphyry targets (Pour & Hashim 2012 + Lowell & Guilbert 1970)..."):
+                    active_poly_p4 = st.session_state.get("active_polygon")
+                    pp_targets = generate_porphyry_targets(
+                        pp_result, max_targets=max_pp_targets,
+                        polygon_geojson=active_poly_p4
+                    )
+                
+                if pp_targets:
+                    st.session_state["porphyry_targets"] = pp_targets
+                    st.session_state["porphyry_data"] = pp_result
+                    
+                    pp_idx1, pp_idx2, pp_idx3, pp_idx4, pp_idx5 = st.columns(5)
+                    with pp_idx1:
+                        st.metric("Phyllic", pp_result.get("phyllic_val", 0))
+                    with pp_idx2:
+                        st.metric("Argillic", pp_result.get("argillic_val", 0))
+                    with pp_idx3:
+                        st.metric("Propylitic", pp_result.get("propylitic_val", 0))
+                    with pp_idx4:
+                        st.metric("Quartz (TIR)", pp_result.get("quartz_val", 0))
+                    with pp_idx5:
+                        st.metric("Iron Oxide", "N/A")
+                    
+                    st.info(f"Generated **{len(pp_targets)}** porphyry targets")
+                else:
+                    st.warning("No porphyry targets found in this area.")
+    
+    # Display porphyry targets
+    pp_targets_display = st.session_state.get("porphyry_targets")
+    if pp_targets_display:
+        st.markdown("### Porphyry Target Zones")
+        
+        for t in pp_targets_display:
+            zone_icon = "🟢" if "Phyllic" in t["structural_control"] else ("🔴" if "Potassic" in t["structural_control"] else ("🟡" if "Argillic" in t["structural_control"] else "🔵"))
+            with st.expander(f"{zone_icon} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    st.metric("Phyllic Score", t["phyllic_score"])
+                    st.metric("Quartz Score", t["quartz_score"])
+                    st.metric("Argillic Score", t["argillic_score"])
+                with tc2:
+                    st.metric("Propylitic Score", t["propylitic_score"])
+                    st.metric("Iron Oxide Score", t["io_score"])
+                    st.metric("Radius (m)", t["radius_m"])
+                
+                st.markdown(f"**Lithology:** {t['lithology']}")
+                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
+                st.markdown(f"**EN:** {t['description_en']}")
+                st.caption(f"**PT:** {t['description_pt']}")
+else:
+    st.info("Run Phase 1 satellite analysis first to enable porphyry targeting.")
 
 # ================================================================
 # IBM WATSONX GEOLOGICAL REPORT
