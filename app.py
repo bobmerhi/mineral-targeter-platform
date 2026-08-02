@@ -384,6 +384,26 @@ elif search_method == "(c) Coordinates + Radius":
 else:
     st.sidebar.info("Clique no mapa para selecionar coordenadas.")
 
+# ==============================================================================
+# PHASE 6: ALLUVIAL SOURCE TRACER (Sidebar Tool)
+# ==============================================================================
+st.sidebar.divider()
+st.sidebar.header("📍 Phase 6: Source Tracer")
+st.sidebar.caption("Geometric tracing (TWI + Curvature) for proximal quartz vein sources (<1km)")
+
+trace_lat = st.sidebar.number_input(
+    "Alluvial Point — Latitude",
+    min_value=-27.0, max_value=-10.0,
+    value=-15.0, format="%.6f",
+    help="Latitude of confirmed alluvial gold occurrence")
+trace_lon = st.sidebar.number_input(
+    "Alluvial Point — Longitude",
+    min_value=30.0, max_value=42.0,
+    value=37.0, format="%.6f",
+    help="Longitude of confirmed alluvial gold occurrence")
+
+trace_btn = st.sidebar.button("🔍 Trace Source", type="primary", use_container_width=True, key="trace_source_btn")
+
 st.sidebar.divider()
 target_commodity = st.sidebar.selectbox(
     "Commodity Focus",
@@ -884,151 +904,101 @@ with exp2_c2:
 
 
 # ================================================================
-# ==============================================================================
-# PHASE 6: ALLUVIAL SOURCE TRACER
-# ==============================================================================
-st.markdown("---")
-st.markdown("## 🔍 Phase 6: Alluvial Source Tracer")
-st.caption("Trace confirmed alluvial gold points back to probable bedrock sources using DEM flow routing + spectral lithology matching")
+# Phase 6 results rendering (main body)
 
-with st.expander("How it works", expanded=False):
-    st.markdown("""
-    **Methodology**: Based on Amiri et al. (2005) and Robert et al. (2007)
-    
-    1. **Geomorphological Tracing**: DEM flow direction/accumulation identifies upstream catchment
-    2. **Spectral Lithology Matching**: Sentinel-2 HMI/FSI indices map heavy mineral & mafic source rocks  
-    3. **Structural Analysis**: Lineament density highlights fault-controlled fluid pathways
-    4. **Target Generation**: Composite scoring (40% HMI + 40% FSI + 20% Structural) pinpoints probable source outcrops
-    
-    **Refined for proximal quartz vein tracing** (gold travels <1km from source)
-    
-    **Primary**: Geometric traps — TWI (wetness) + Planform Curvature (convergence)
-    **Secondary**: Spectral cross-reference — HMI (heavy minerals) + FSI (mafic source)
-    **Weights**: 35% TWI + 35% Curvature + 15% HMI + 10% FSI + 5% Structural
-    
-    **Option A (Free)**: AW3D30/SRTM DEM + Sentinel-2 spectral indices
-    **Option B (Paid)**: Airborne LiDAR + Drone Magnetometry for vegetated terrain
-    """)
-
-# Get available data from session
-sat_data_tracer = st.session_state.get("satellite_data")
-active_poly_tracer = st.session_state.get("active_polygon")
-
-if sat_data_tracer is None:
-    st.warning("⚠️ Please search a license and fetch satellite imagery first to enable source tracing.")
-else:
-    dem_data_tracer = sat_data_tracer.get("dem_map")
-    fetch_bbox_tracer = sat_data_tracer.get("fetch_bbox", None)
-    
-    col_st1, col_st2 = st.columns(2)
-    with col_st1:
-        trace_lat = st.number_input(
-            "Confirmed Alluvial Point — Latitude",
-            min_value=-35.0, max_value=-10.0,
-            value=-15.0, format="%.6f",
-            help="Latitude of confirmed alluvial gold occurrence")
-    with col_st2:
-        trace_lon = st.number_input(
-            "Confirmed Alluvial Point — Longitude",
-            min_value=30.0, max_value=42.0,
-            value=37.0, format="%.6f",
-            help="Longitude of confirmed alluvial gold occurrence")
-    
-    # Show where the point is relative to the license area
-    if fetch_bbox_tracer:
-        min_lon, min_lat, max_lon, max_lat = fetch_bbox_tracer
-        in_bounds = (min_lon <= trace_lon <= max_lon) and (min_lat <= trace_lat <= max_lat)
-        if in_bounds:
-            st.success(f"✅ Point ({trace_lat:.4f}, {trace_lon:.4f}) is within the fetched imagery area")
-        else:
-            st.warning(f"⚠️ Point is outside imagery bounds ({min_lat:.4f} to {max_lat:.4f}S, {min_lon:.4f} to {max_lon:.4f}E). Fetch a wider area first.")
-    
-    if st.button("🔍 Trace Alluvial Source", type="primary", use_container_width=True, key="trace_source_btn"):
-        trace_progress = st.progress(0.0)
-        trace_status = st.empty()
-        
+# --- Results render in MAIN BODY (not sidebar) ---
+if trace_btn:
+    with st.status("Tracing alluvial source...", expanded=True) as trace_status:
         def _trace_cb(msg):
-            trace_status.text(msg)
-        
-        # Map sat_data keys for the tracer
-        tracer_sat_data = sat_data_tracer.copy()
-        # Use iron_oxide_map as HMI proxy if hmi_map not available
-        if "hmi_map" not in tracer_sat_data and "iron_oxide_map" in tracer_sat_data:
-            tracer_sat_data["hmi_map"] = tracer_sat_data["iron_oxide_map"]
-        # fsi_map may come from ASTER lithology; if not available, use a zero map
-        if "fsi_map" not in tracer_sat_data:
-            if "iron_oxide_map" in tracer_sat_data:
+            st.write(msg)
+
+        # Get satellite data if available (optional — geometry works without it)
+        sat_data_tracer = st.session_state.get("satellite_data")
+        tracer_sat_data = sat_data_tracer.copy() if sat_data_tracer else {}
+        dem_data_tracer = None
+        fetch_bbox_tracer = None
+
+        if sat_data_tracer:
+            dem_data_tracer = sat_data_tracer.get("dem_map")
+            fetch_bbox_tracer = sat_data_tracer.get("fetch_bbox", None)
+            # Use iron_oxide_map as HMI proxy if hmi_map not available
+            if "hmi_map" not in tracer_sat_data and "iron_oxide_map" in tracer_sat_data:
+                tracer_sat_data["hmi_map"] = tracer_sat_data["iron_oxide_map"]
+            # fsi_map fallback
+            if "fsi_map" not in tracer_sat_data and "iron_oxide_map" in tracer_sat_data:
                 tracer_sat_data["fsi_map"] = np.zeros_like(tracer_sat_data["iron_oxide_map"])
-        # DEM is now fetched in fetch_satellite_imagery and stored as dem_map
+
+        # If no DEM from satellite fetch, try on-demand DEM fetch
         if dem_data_tracer is None:
-            # Try to fetch DEM on-demand if not in sat_data
             try:
                 from georemote import fetch_dem_data
-                fb = tracer_sat_data.get("fetch_bbox")
-                if fb:
-                    dem_data_tracer = fetch_dem_data(fb, progress_cb=_trace_cb)
-            except Exception:
-                pass
-        
+                # Use a 0.1 degree buffer (~11km) around the point for DEM
+                dem_bbox = [trace_lon - 0.1, trace_lat - 0.1, trace_lon + 0.1, trace_lat + 0.1]
+                _trace_cb("Fetching DEM on-demand (no satellite data required)...")
+                dem_data_tracer = fetch_dem_data(dem_bbox, progress_cb=_trace_cb)
+                if fetch_bbox_tracer is None:
+                    fetch_bbox_tracer = dem_bbox
+                tracer_sat_data["fetch_bbox"] = fetch_bbox_tracer
+            except Exception as e:
+                _trace_cb(f"DEM fetch error: {e}")
+
         trace_result = trace_alluvial_source(
             float(trace_lat), float(trace_lon),
             tracer_sat_data, dem_data=dem_data_tracer,
             progress_cb=_trace_cb
         )
-        
-        trace_progress.progress(1.0)
-        
-        if trace_result.get("status") == "option_b_required":
-            st.error("⚠️ No DEM data available for hydrological tracing")
-            st.info(f"""
-            **Option B (Paid Upgrade) Required**
-            
-            - **LiDAR Bare Earth**: Strips vegetation to reveal micro-topography (${trace_result.get('cost_estimate_usd_per_km2', 12)}/km²)
-            - **Drone Magnetometry**: Maps subsurface heavy minerals under cover
-            - **Accuracy Gain**: {trace_result.get('accuracy_free', '<40%')} → {trace_result.get('accuracy_paid', '>85%')}
-            - **Delivery**: {trace_result.get('delivery_weeks', 2)} weeks
-            """)
-        
-        elif trace_result.get("status") == "success":
-            targets_st = trace_result.get("targets", [])
-            
-            if not targets_st:
-                st.warning("No source targets identified in the upstream catchment. Try adjusting coordinates or fetch wider imagery.")
-            else:
-                st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
-                
-                # Display targets in a table
-                st.markdown("### Probable Source Targets")
-                target_data_st = []
-                for i, t in enumerate(targets_st, 1):
-                    target_data_st.append({
-                        "#": i,
-                        "Type": t.get("source_type", "Unknown"),
-                        "Score": t.get("score", 0),
-                        "Lat": t.get("lat", 0),
-                        "Lon": t.get("lon", 0),
-                        "TWI": t.get("twi_score", 0),
-                        "Curvature": t.get("curvature_score", 0),
-                        "HMI": t.get("hmi_score", 0),
-                        "FSI": t.get("fsi_score", 0),
-                        "Struct": t.get("struct_score", 0)
-                    })
-                st.dataframe(target_data_st, use_container_width=True, hide_index=True)
-                
-                # KML Export
-                kml_bytes = create_kml(targets_st)
-                st.download_button(
-                    "🌐 Download Source Targets (KML for Google Earth)",
-                    data=kml_bytes,
-                    file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.kml",
-                    mime="application/vnd.google-earth.kml+xml",
-                    use_container_width=True
-                )
-                st.caption("Open in Google Earth to view probable bedrock source locations with scores and mineral indices")
-        
-        else:
-            st.error(f"Trace failed: {trace_result}")
 
+        trace_status.update(label="Source tracing complete", state="complete")
+
+    # Render results in main body
+    if trace_result.get("status") == "option_b_required":
+        st.error("⚠️ No DEM data available for geometric tracing")
+        st.info(f"""
+        **Option B (Paid Upgrade) Required**
+
+        - **LiDAR Bare Earth**: Strips vegetation to reveal micro-topography (${trace_result.get('cost_estimate_usd_per_km2', 12)}/km²)
+        - **Drone Magnetometry**: Maps subsurface heavy minerals under cover
+        - **Accuracy Gain**: {trace_result.get('accuracy_free', '<40%')} → {trace_result.get('accuracy_paid', '>85%')}
+        - **Delivery**: {trace_result.get('delivery_weeks', 2)} weeks
+        """)
+
+    elif trace_result.get("status") == "success":
+        targets_st = trace_result.get("targets", [])
+
+        if not targets_st:
+            st.warning("No source targets identified. Try adjusting coordinates.")
+        else:
+            st.success(f"✅ Identified {len(targets_st)} probable bedrock source targets")
+
+            st.markdown("### 🔍 Phase 6: Probable Source Targets")
+            target_data_st = []
+            for i, t in enumerate(targets_st, 1):
+                target_data_st.append({
+                    "#": i,
+                    "Type": t.get("source_type", "Unknown"),
+                    "Score": t.get("score", 0),
+                    "Lat": t.get("lat", 0),
+                    "Lon": t.get("lon", 0),
+                    "TWI": t.get("twi_score", 0),
+                    "Curvature": t.get("curvature_score", 0),
+                    "HMI": t.get("hmi_score", 0),
+                    "FSI": t.get("fsi_score", 0),
+                    "Struct": t.get("struct_score", 0)
+                })
+            st.dataframe(target_data_st, use_container_width=True, hide_index=True)
+
+            kml_bytes = create_kml(targets_st)
+            st.download_button(
+                "🌐 Download Source Targets (KML for Google Earth)",
+                data=kml_bytes,
+                file_name=f"alluvial_source_trace_{trace_lat:.4f}_{trace_lon:.4f}.kml",
+                mime="application/vnd.google-earth.kml+xml",
+                use_container_width=True
+            )
+            st.caption("Open in Google Earth to view probable bedrock source locations with scores and mineral indices")
+
+    else:
+        st.error(f"Trace failed: {trace_result}")
 
 
 # UNIFIED MODE SELECTOR (5 Deposit Models)

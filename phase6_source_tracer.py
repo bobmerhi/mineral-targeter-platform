@@ -167,13 +167,13 @@ def _generate_source_targets_tracer(twi, curvature, hmi_map, fsi_map, struct_map
     # --- SPECTRAL DATA SAFETY CHECK ---
     # If satellite indices are missing or empty, default to zero so geometry takes priority
     def safe_norm(arr):
-        if arr is None or np.all(arr == 0) or np.all(arr == -999):
+        if arr is None or not isinstance(arr, np.ndarray) or np.all(arr == 0) or np.all(arr == -999):
             return np.zeros_like(twi_norm)
         return norm_01(arr.copy())
 
     hmi_norm = safe_norm(hmi_map)
     fsi_norm = safe_norm(fsi_map)
-    struct_norm = safe_norm(lineament_density)
+    struct_norm = safe_norm(struct_map)
     # ------------------------------------
 
     # Composite Score: Heavily weighted toward Geometry for proximal tracing
