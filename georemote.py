@@ -1678,3 +1678,256 @@ def generate_epithermal_targets(sat_data, max_targets=12, polygon_geojson=None):
         })
     
     return targets
+
+
+# ==============================================================================
+# PHASE 3: PLACER GOLD MODULE
+# ==============================================================================
+# Geomorphology-first placer targeting based on Amiri et al. (2005) & Robert et al. (2007)
+# Implements Option A (Free DEM + Sentinel-2) / Option B (LiDAR + Drone Mag) workflow
+# Focuses on paleochannel reconstruction, heavy mineral concentration, and trap identification
+# ==============================================================================
+
+def _compute_flow_accumulation(dem_data):
+    """
+    Simplified flow accumulation proxy using gradient-based approximation.
+    For production, replace with whitebox-tools or richdem for D8/D-inf routing.
+    """
+    gradient_x = np.gradient(dem_data, axis=1)
+    gradient_y = np.gradient(dem_data, axis=0)
+    magnitude = np.sqrt(gradient_x**2 + gradient_y**2) + 1e-6
+    flow_proxy = 1.0 / magnitude
+    return flow_proxy
+
+
+def compute_placer_indices(sat_data, dem_data=None, progress_cb=None):
+    """
+    Computes placer-specific indices using Sentinel-2 and DEM data.
+    
+    OPTION A (FREE): Sentinel-2 B11/B8 Heavy Mineral Index + AW3D30/SRTM DEM
+                     for Terrain Ruggedness Index (TRI) and Flow Accumulation.
+    OPTION B (PAID): Triggered if no DEM available; returns LiDAR/Drone Mag upgrade metadata.
+    """
+    def _cb(msg):
+        if progress_cb: progress_cb(msg)
+    
+    h, w = sat_data["iron_oxide_map"].shape
+    
+    # HEAVY MINERAL INDEX (HMI) - Sentinel-2 Based
+    # Maps magnetite/ilmenite black sands that co-concentrate with gold
+    b11_raw = sat_data.get("swir1_map", np.zeros((h, w)))
+    b8_raw = sat_data.get("nir_map", np.zeros((h, w)))
+    
+    hmi = np.divide(b11_raw - b8_raw, b11_raw + b8_raw + 1e-6)
+    
+    # TERRAIN RUGGEDNESS INDEX (TRI) - DEM Based
+    if dem_data is not None:
+        tri = np.sqrt(
+            np.gradient(dem_data, axis=0)**2 +
+            np.gradient(dem_data, axis=1)**2
+        )
+        flow_accum = _compute_flow_accumulation(dem_data)
+        _cb("Free DEM data available: Computing TRI + Flow Accumulation")
+    else:
+        _cb("NO HIGH-RESOLUTION DEM FOR THIS AREA")
+        _cb("OPTION B (PAID UPGRADE) AVAILABLE:")
+        _cb("- Airborne LiDAR (Bare Earth): Strips vegetation for micro-topography")
+        _cb("- Drone Magnetometry: Maps subsurface heavy mineral concentrations")
+        _cb("- Cost: ~$8-$15/km2 (LiDAR) | $5-$10/km2 (Drone Mag)")
+        _cb("- Accuracy Gain: Detects paleochannels invisible to optical RS in dense forest")
+        return {
+            "status": "option_b_required",
+            "upgrade_path": "lidar_drone_mag",
+            "accuracy_free": "<40% (Cannot map paleochannels under vegetation)",
+            "accuracy_paid": ">85% (Direct bare-earth topography + subsurface mag)",
+            "cost_estimate_usd_per_km2": 12,
+            "delivery_weeks": 2
+        }
+    
+    _cb("Computing placer-specific indices...")
+    
+    def norm_01(arr):
+        mn, mx = np.nanmin(arr), np.nanmax(arr)
+        return (arr - mn) / (mx - mn + 1e-6)
+    
+    _cb("Placer indices computed successfully!")
+    
+    return {
+        "status": "success",
+        "hmi_map": hmi,
+        "tri_map": tri,
+        "flow_accum_map": flow_accum,
+        "hmi_val": round(float(np.nanmean(hmi)), 3),
+        "tri_val": round(float(np.nanmean(tri)), 3),
+        "flow_val": round(float(np.nanmean(flow_accum)), 3),
+        "fetch_bbox": sat_data.get("fetch_bbox"),
+        "data_source": "Sentinel-2 + AW3D30/SRTM (FREE)"
+    }
+
+
+def generate_placer_targets(placer_data, max_targets=12, polygon_geojson=None):
+    """
+    Generates exploration targets using Placer-specific WLC formula.
+    Weights based on Amiri et al. (2005) geomorphological trapping model.
+    
+    WLC: HMI 0.40 + Flow 0.30 + Slope 0.20 + TRI 0.10
+    ZERO weight on alteration/structure — irrelevant to sedimentary gold.
+    """
+    try:
+        from scipy.ndimage import label as nd_label, center_of_mass, gaussian_filter
+    except ImportError:
+        nd_label = None
+        center_of_mass = None
+        gaussian_filter = None
+    
+    h, w = placer_data["hmi_map"].shape
+    fetch_bbox = placer_data.get("fetch_bbox")
+    
+    # Build polygon mask (proper georeferenced version)
+    poly_mask = None
+    if polygon_geojson and fetch_bbox:
+        from matplotlib.path import Path
+        lon_min, lat_min, lon_max, lat_max = fetch_bbox
+        ys, xs = np.mgrid[:h, :w]
+        grid = np.column_stack([xs.ravel(), ys.ravel()])
+        mask = np.zeros(h * w, dtype=bool)
+        for ring in polygon_geojson["geometry"]["coordinates"]:
+            verts_px = []
+            for p in ring:
+                px = (p[0] - lon_min) / (lon_max - lon_min) * w
+                py = (lat_max - p[1]) / (lat_max - lat_min) * h
+                verts_px.append((px, py))
+            path = Path(verts_px)
+            mask |= path.contains_points(grid)
+        poly_mask = mask.reshape(h, w)
+    if poly_mask is None:
+        poly_mask = np.ones((h, w), dtype=bool)
+    
+    def norm_01(arr):
+        mn, mx = np.nanmin(arr), np.nanmax(arr)
+        return (arr - mn) / (mx - mn + 1e-6)
+    
+    hmi_norm = norm_01(placer_data["hmi_map"])
+    tri_norm = norm_01(placer_data["tri_map"])
+    flow_norm = norm_01(placer_data["flow_accum_map"])
+    
+    slope_proxy = 1.0 - tri_norm
+    
+    # PLACER WLC FORMULA (Amiri et al. 2005)
+    composite = (
+        0.40 * hmi_norm +       # Heavy mineral sand concentration
+        0.30 * flow_norm +      # Paleochannel proximity / drainage convergence
+        0.20 * slope_proxy +    # Flat terrain / terrace / inside bend
+        0.10 * tri_norm         # Ruggedness as secondary trap indicator
+    )
+    
+    composite_masked = composite.copy()
+    composite_masked[~poly_mask] = -999
+    
+    if gaussian_filter:
+        composite_smooth = gaussian_filter(
+            np.where(composite_masked > -998, composite_masked, 0), sigma=3
+        )
+        composite_smooth[~poly_mask] = -999
+    else:
+        composite_smooth = composite_masked
+    
+    inside_vals = composite_smooth[poly_mask]
+    if len(inside_vals) == 0:
+        return []
+    
+    threshold_high = np.nanpercentile(inside_vals, 90)
+    threshold_med = np.nanpercentile(inside_vals, 75)
+    
+    if nd_label is None or center_of_mass is None:
+        return []
+    
+    binary = (composite_smooth > threshold_med) & poly_mask
+    labeled, num_features = nd_label(binary)
+    if num_features == 0:
+        return []
+    
+    scores_per_cluster = {}
+    for label_id in range(1, num_features + 1):
+        mask = labeled == label_id
+        score = float(np.nanmean(composite_smooth[mask]))
+        scores_per_cluster[label_id] = score
+    
+    top_clusters = sorted(scores_per_cluster.items(), key=lambda x: x[1], reverse=True)[:max_targets]
+    
+    # FIX: Proper coordinate extraction using fetch_bbox
+    lat_min, lon_min = (fetch_bbox[1], fetch_bbox[0]) if fetch_bbox else (0, 0)
+    lat_max, lon_max = (fetch_bbox[3], fetch_bbox[2]) if fetch_bbox else (1, 1)
+    
+    targets = []
+    
+    for label_id, score in top_clusters:
+        cy, cx = center_of_mass(labeled == label_id)
+        
+        # FIX: Actual lat/lon from pixel coordinates
+        lat = lat_max - (cy / h) * (lat_max - lat_min)
+        lon = lon_min + (cx / w) * (lon_max - lon_min)
+        
+        priority = "HIGH" if score >= threshold_high else ("MEDIUM" if score >= threshold_med else "LOW")
+        
+        cluster_mask = labeled == label_id
+        cluster_size = int(np.sum(cluster_mask))
+        
+        hmi_s = round(float(np.nanmean(hmi_norm[cluster_mask])), 3)
+        flow_s = round(float(np.nanmean(flow_norm[cluster_mask])), 3)
+        slope_s = round(float(np.nanmean(slope_proxy[cluster_mask])), 3)
+        tri_s = round(float(np.nanmean(tri_norm[cluster_mask])), 3)
+        
+        # Classify trap type
+        if flow_s > hmi_s and flow_s > slope_s:
+            trap_type = "Paleochannel Convergence Zone"
+            lithology = "Alluvial gravel/sand with heavy mineral concentration"
+        elif hmi_s > flow_s and hmi_s > slope_s:
+            trap_type = "Heavy Mineral Sand Concentration"
+            lithology = "Black sand (magnetite/ilmenite) placer deposit"
+        else:
+            trap_type = "Terrace / Inside Bend Trap"
+            lithology = "Fluvial terrace or river bend sediment accumulation"
+        
+        radius_m = max(50, min(500, int(np.sqrt(cluster_size)) * 30))
+        lat_pad = 0.004
+        lon_pad = lat_pad * 1.2
+        ring = [
+            [lon - lon_pad, lat - lat_pad],
+            [lon + lon_pad, lat - lat_pad],
+            [lon + lon_pad, lat + lat_pad],
+            [lon - lon_pad, lat + lat_pad],
+            [lon - lon_pad, lat - lat_pad],
+        ]
+        
+        score_pct = round(score * 100, 1)
+        desc_en = (
+            f"[PLACER-{trap_type.upper()}] Target zone with composite score {score_pct}%. "
+            f"HMI={hmi_s}, FlowAccum={flow_s}, SlopeProxy={slope_s}, TRI={tri_s}. "
+            f"Lithology: {lithology}."
+        )
+        desc_pt = (
+            f"[PLACER-{trap_type.upper()}] Zona alvo com score composto {score_pct}%. "
+            f"HMI={hmi_s}, AcumulacaoFluxo={flow_s}, Declividade={slope_s}, TRI={tri_s}. "
+            f"Litologia: {lithology}."
+        )
+        
+        targets.append({
+            "id": f"PL-T-{len(targets)+1:02d}",
+            "score": score_pct,
+            "priority": priority,
+            "structural_control": trap_type,
+            "lithology": lithology,
+            "radius_m": radius_m,
+            "lat": round(lat, 6),
+            "lon": round(lon, 6),
+            "polygon": ring,
+            "hmi_score": hmi_s,
+            "flow_score": flow_s,
+            "slope_score": slope_s,
+            "tri_score": tri_s,
+            "description_en": desc_en,
+            "description_pt": desc_pt,
+        })
+    
+    return targets

@@ -29,6 +29,8 @@ try:
         generate_exploration_targets,
         fetch_aster_swir_gold_indices,
         generate_epithermal_targets,
+        compute_placer_indices,
+        generate_placer_targets,
     )
 except Exception as _georemote_err:
     import traceback as _tb
@@ -153,6 +155,8 @@ DEFAULTS = {
     "exploration_targets": None,
     "epithermal_targets": None,
     "epithermal_data": None,
+    "placer_targets": None,
+    "placer_data": None,
     "fetch_running": False,  # True only while the fetch st.status block is executing
     "last_license": "",
     "name_search_results": None,
@@ -978,6 +982,104 @@ if sat_data_p2 and m_data_p2:
                 st.caption(f"**PT:** {t['description_pt']}")
 else:
     st.info("Run Phase 1 satellite analysis first to enable epithermal activation.")
+
+
+# ================================================================
+# PHASE 3: PLACER GOLD MODULE (Geomorphology-First)
+# Based on: Amiri et al. (2005), Robert et al. (2007)
+# ================================================================
+st.markdown("---")
+st.markdown("## Phase 3: Placer Gold (Geomorphology-First)")
+
+sat_data_p3 = st.session_state.get("satellite_data")
+m_data_p3 = st.session_state.get("m_data")
+
+if sat_data_p3 and m_data_p3:
+    pl_col1, pl_col2 = st.columns([2, 1])
+    
+    with pl_col2:
+        max_pl_targets = st.slider("Max Placer Targets", 3, 25, 12)
+    
+    with pl_col1:
+        if st.button("Activate Placer Analysis", type="primary", use_container_width=True):
+            pl_progress = st.empty()
+            pl_status = st.empty()
+            
+            def _pl_cb(msg):
+                pl_status.text(msg)
+            
+            with st.spinner("Computing placer indices (HMI + TRI + Flow Accumulation)..."):
+                # Use SRTM DEM from sat_data if available, else None triggers Option B
+                dem_data_p3 = sat_data_p3.get("dem_map")
+                
+                pl_result = compute_placer_indices(
+                    sat_data_p3, dem_data=dem_data_p3, progress_cb=_pl_cb
+                )
+            
+            if pl_result.get("status") == "option_b_required":
+                st.warning("No DEM data available for placer analysis.")
+                st.info(
+                    f"**Paid Upgrade Path Available**\n"
+                    f"- Method: {pl_result.get('upgrade_path', 'lidar_drone_mag')}\n"
+                    f"- Free accuracy: {pl_result.get('accuracy_free', 'N/A')}\n"
+                    f"- Paid accuracy: {pl_result.get('accuracy_paid', 'N/A')}\n"
+                    f"- Cost estimate: ${pl_result.get('cost_estimate_usd_per_km2', 12)}/km2\n"
+                    f"- Delivery: {pl_result.get('delivery_weeks', 2)} weeks"
+                )
+            elif pl_result.get("status") == "error":
+                st.error(f"Placer analysis error: {pl_result.get('reason', 'Unknown')}")
+            elif pl_result.get("status") == "success":
+                st.success("Placer indices computed from Sentinel-2 + DEM (FREE)")
+                
+                # Add fetch_bbox from sat_data for coordinate extraction
+                pl_result["fetch_bbox"] = sat_data_p3.get("fetch_bbox")
+                
+                with st.spinner("Generating placer targets (Amiri et al. 2005 WLC)..."):
+                    active_poly_p3 = st.session_state.get("active_polygon")
+                    pl_targets = generate_placer_targets(
+                        pl_result, max_targets=max_pl_targets,
+                        polygon_geojson=active_poly_p3
+                    )
+                
+                if pl_targets:
+                    st.session_state["placer_targets"] = pl_targets
+                    st.session_state["placer_data"] = pl_result
+                    
+                    # Show placer index values
+                    idx_col1, idx_col2, idx_col3 = st.columns(3)
+                    with idx_col1:
+                        st.metric("Heavy Mineral Index", pl_result.get("hmi_val", 0))
+                    with idx_col2:
+                        st.metric("Terrain Ruggedness", pl_result.get("tri_val", 0))
+                    with idx_col3:
+                        st.metric("Flow Accumulation", pl_result.get("flow_val", 0))
+                    
+                    st.info(f"Generated **{len(pl_targets)}** placer targets")
+                else:
+                    st.warning("No placer targets found in this area.")
+    
+    # Display placer targets if available
+    pl_targets_display = st.session_state.get("placer_targets")
+    if pl_targets_display:
+        st.markdown("### Placer Target Zones")
+        
+        for t in pl_targets_display:
+            trap_color = "🟤" if "Heavy Mineral" in t["structural_control"] else ("🌊" if "Paleochannel" in t["structural_control"] else "🏞️")
+            with st.expander(f"{trap_color} {t['id']} - Score: {t['score']}% - {t['structural_control']}", expanded=False):
+                tc1, tc2 = st.columns(2)
+                with tc1:
+                    st.metric("HMI Score", t["hmi_score"])
+                    st.metric("Flow Score", t["flow_score"])
+                with tc2:
+                    st.metric("Slope Score", t["slope_score"])
+                    st.metric("TRI Score", t["tri_score"])
+                
+                st.markdown(f"**Lithology:** {t['lithology']}")
+                st.markdown(f"**Coordinates:** {t['lat']}, {t['lon']}")
+                st.markdown(f"**EN:** {t['description_en']}")
+                st.caption(f"**PT:** {t['description_pt']}")
+else:
+    st.info("Run Phase 1 satellite analysis first to enable placer targeting.")
 
 # ================================================================
 # IBM WATSONX GEOLOGICAL REPORT
