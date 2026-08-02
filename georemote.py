@@ -2475,3 +2475,160 @@ def generate_rir_targets(sat_data, max_targets=12, polygon_geojson=None):
         })
     
     return targets
+
+
+# ==============================================================================
+# GOOGLE ELEVATION API — High-Resolution DEM Fetch (5m interpolated grid)
+# ==============================================================================
+
+def fetch_google_elevation(center_lat, center_lon, radius_m=500, spacing_m=5,
+                           progress_cb=None, api_key_env="GOOGLE_API_KEY"):
+    """
+    Fetches high-resolution elevation data from Google Elevation API.
+    Returns a GeoArray (same interface as Copernicus DEM) with affine transform,
+    so it drops directly into trace_alluvial_source without any code changes.
+    
+    Parameters:
+        center_lat, center_lon: Center point coordinates
+        radius_m: Search radius in meters (default 500)
+        spacing_m: Grid spacing in meters (default 5)
+        progress_cb: Optional callback for progress messages
+        api_key_env: Environment variable name for Google API key
+    
+    Returns:
+        GeoArray with elevation data and georeferencing transform, or None on failure.
+    """
+    import os
+    import requests
+    from affine import Affine
+    
+    def _cb(msg):
+        if progress_cb:
+            progress_cb(msg)
+    
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        _cb("⚠️ No Google API key found. Falling back to Copernicus DEM.")
+        return None
+    
+    # Generate circular grid points
+    lat_per_m = 1.0 / 111000.0
+    lon_per_m = 1.0 / (111000.0 * math.cos(math.radians(center_lat)))
+    
+    points = []
+    for x in range(-radius_m, radius_m + 1, spacing_m):
+        for y in range(-radius_m, radius_m + 1, spacing_m):
+            if x * x + y * y <= radius_m * radius_m:
+                lat = center_lat + y * lat_per_m
+                lon = center_lon + x * lon_per_m
+                points.append((lat, lon))
+    
+    total_points = len(points)
+    total_batches = math.ceil(total_points / 100)  # 100 pts/batch (URL length safe)
+    _cb(f"Google Elevation API: {total_points} points at {spacing_m}m spacing, {radius_m}m radius...")
+    
+    all_elevations = []
+    batch_size = 100
+    
+    for batch_idx in range(total_batches):
+        start = batch_idx * batch_size
+        end = min(start + batch_size, total_points)
+        batch = points[start:end]
+        
+        locs = "|".join([f"{lat:.6f},{lon:.6f}" for lat, lon in batch])
+        url = f"https://maps.googleapis.com/maps/api/elevation/json?locations={locs}&key={api_key}"
+        
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200 and r.text:
+                data = r.json()
+                if data.get('status') == 'OK':
+                    for result in data['results']:
+                        all_elevations.append(float(result['elevation']))
+                elif data.get('status') == 'OVER_QUERY_LIMIT':
+                    _cb("  Rate limited, retrying after 2s...")
+                    import time
+                    time.sleep(2)
+                    r = requests.get(url, timeout=30)
+                    if r.status_code == 200 and r.text:
+                        data = r.json()
+                        if data.get('status') == 'OK':
+                            for result in data['results']:
+                                all_elevations.append(float(result['elevation']))
+                        else:
+                            all_elevations.extend([0.0] * len(batch))
+                    else:
+                        all_elevations.extend([0.0] * len(batch))
+                else:
+                    all_elevations.extend([0.0] * len(batch))
+            else:
+                all_elevations.extend([0.0] * len(batch))
+        except Exception as e:
+            _cb(f"  Batch {batch_idx + 1} error: {e}")
+            all_elevations.extend([0.0] * len(batch))
+        
+        if (batch_idx + 1) % 50 == 0 or batch_idx == total_batches - 1:
+            valid_so_far = [e for e in all_elevations if e != 0.0]
+            if valid_so_far:
+                _cb(f"  Batch {batch_idx + 1}/{total_batches} — {end}/{total_points} pts — elev: {min(valid_so_far):.1f}-{max(valid_so_far):.1f}m")
+        
+        import time
+        time.sleep(0.05)
+    
+    # Filter valid elevations
+    valid_mask = np.array([e != 0.0 for e in all_elevations])
+    if valid_mask.sum() < total_points * 0.5:
+        _cb(f"⚠️ Only {valid_mask.sum()}/{total_points} elevations fetched. Falling back.")
+        return None
+    
+    # Build regular grid (fill circular mask with NaN outside circle)
+    grid_size = int(2 * radius_m / spacing_m) + 1
+    elev_grid = np.full((grid_size, grid_size), np.nan, dtype=np.float32)
+    
+    # Map points back to grid
+    pt_idx = 0
+    for x in range(-radius_m, radius_m + 1, spacing_m):
+        for y in range(-radius_m, radius_m + 1, spacing_m):
+            if x * x + y * y <= radius_m * radius_m:
+                if pt_idx < len(all_elevations) and all_elevations[pt_idx] != 0.0:
+                    col = int((x + radius_m) / spacing_m)
+                    row = int((radius_m - y) / spacing_m)  # North = row 0
+                    if 0 <= row < grid_size and 0 <= col < grid_size:
+                        elev_grid[row, col] = all_elevations[pt_idx]
+                pt_idx += 1
+    
+    # Fill NaN (outside circle) with nearest valid values
+    if np.any(np.isnan(elev_grid)):
+        from scipy.ndimage import distance_transform_edt
+        # Use distance transform to find nearest valid pixel
+        valid = ~np.isnan(elev_grid)
+        if np.any(valid):
+            # Fill with nearest valid value
+            indices = distance_transform_edt(~valid, return_distances=False, return_indices=True)
+            filled = elev_grid[tuple(indices)]
+            # Only fill border ring (1 pixel) to avoid artifacts deep outside circle
+            border_mask = np.zeros_like(valid, dtype=bool)
+            border_mask[1:-1, 1:-1] = True
+            border_mask &= ~valid
+            elev_grid[border_mask] = filled[border_mask]
+            # Remaining NaN: fill with global mean
+            remaining_nan = np.isnan(elev_grid)
+            if np.any(remaining_nan):
+                valid_mean = np.nanmean(elev_grid)
+                elev_grid[remaining_nan] = valid_mean
+    
+    # Build affine transform
+    # Grid origin: top-left corner = (center_lon - radius_m * lon_per_m, center_lat + radius_m * lat_per_m)
+    origin_lon = center_lon - radius_m * lon_per_m
+    origin_lat = center_lat + radius_m * lat_per_m
+    pixel_w = spacing_m * lon_per_m
+    pixel_h = -(spacing_m * lat_per_m)
+    
+    transform = Affine(pixel_w, 0.0, origin_lon,
+                      0.0, pixel_h, origin_lat)
+    
+    _cb(f"✅ Google DEM: {grid_size}x{grid_size} = {grid_size**2} cells, "
+        f"elev {float(np.nanmin(elev_grid)):.1f}-{float(np.nanmax(elev_grid)):.1f}m, "
+        f"resolution: {spacing_m}m")
+    
+    return GeoArray(elev_grid, transform=transform, crs="EPSG:4326")

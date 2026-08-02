@@ -969,22 +969,54 @@ if trace_btn:
             if "fsi_map" not in tracer_sat_data and "iron_oxide_map" in tracer_sat_data:
                 tracer_sat_data["fsi_map"] = np.zeros_like(tracer_sat_data["iron_oxide_map"])
 
-        # If no DEM from satellite fetch, try on-demand DEM fetch
+        # If no DEM from satellite fetch, try Google Elevation API first (5m resolution),
+        # then fall back to Copernicus DEM (90m) if no Google API key
         if dem_data_tracer is None:
             try:
-                from georemote import fetch_dem_data
-                # Use a 0.1 degree buffer (~11km) around the point for DEM
-                # Buffer DEM bbox by search_radius (~111km per degree) with padding
-                deg_buffer = max((trace_radius / 111000) + 0.02, 0.05)
-                dem_bbox = [trace_lon - deg_buffer, trace_lat - deg_buffer,
-                            trace_lon + deg_buffer, trace_lat + deg_buffer]
-                _trace_cb("Fetching DEM on-demand (no satellite data required)...")
-                dem_data_tracer = fetch_dem_data(dem_bbox, progress_cb=_trace_cb)
-                if fetch_bbox_tracer is None:
-                    fetch_bbox_tracer = dem_bbox
-                tracer_sat_data["fetch_bbox"] = fetch_bbox_tracer
+                from georemote import fetch_google_elevation
+                _trace_cb("Fetching high-res DEM from Google Elevation API (5m grid)...")
+                dem_data_tracer = fetch_google_elevation(
+                    float(trace_lat), float(trace_lon),
+                    radius_m=int(trace_radius),
+                    spacing_m=5,
+                    progress_cb=_trace_cb
+                )
+                if dem_data_tracer is not None:
+                    # Set fetch_bbox from the Google DEM's transform
+                    if hasattr(dem_data_tracer, 'transform'):
+                        t = dem_data_tracer.transform
+                        h, w = dem_data_tracer.shape
+                        min_lon = t.c
+                        max_lat = t.f
+                        max_lon = t.c + t.a * w
+                        min_lat = t.f + t.e * h
+                        fetch_bbox_tracer = [min_lon, min_lat, max_lon, max_lat]
+                        tracer_sat_data["fetch_bbox"] = fetch_bbox_tracer
+                    _trace_cb("✅ Using Google Elevation API DEM (5m resolution)")
+                else:
+                    _trace_cb("Google API unavailable, falling back to Copernicus DEM (90m)...")
+                    from georemote import fetch_dem_data
+                    deg_buffer = max((trace_radius / 111000) + 0.02, 0.05)
+                    dem_bbox = [trace_lon - deg_buffer, trace_lat - deg_buffer,
+                                trace_lon + deg_buffer, trace_lat + deg_buffer]
+                    dem_data_tracer = fetch_dem_data(dem_bbox, progress_cb=_trace_cb)
+                    if fetch_bbox_tracer is None:
+                        fetch_bbox_tracer = dem_bbox
+                    tracer_sat_data["fetch_bbox"] = fetch_bbox_tracer
             except Exception as e:
-                _trace_cb(f"DEM fetch error: {e}")
+                _trace_cb(f"Google DEM fetch error: {e}")
+                try:
+                    from georemote import fetch_dem_data
+                    _trace_cb("Falling back to Copernicus DEM (90m)...")
+                    deg_buffer = max((trace_radius / 111000) + 0.02, 0.05)
+                    dem_bbox = [trace_lon - deg_buffer, trace_lat - deg_buffer,
+                                trace_lon + deg_buffer, trace_lat + deg_buffer]
+                    dem_data_tracer = fetch_dem_data(dem_bbox, progress_cb=_trace_cb)
+                    if fetch_bbox_tracer is None:
+                        fetch_bbox_tracer = dem_bbox
+                    tracer_sat_data["fetch_bbox"] = fetch_bbox_tracer
+                except Exception as e2:
+                    _trace_cb(f"Copernicus DEM also failed: {e2}")
 
         trace_result = trace_alluvial_source(
             float(trace_lat), float(trace_lon),
@@ -1029,8 +1061,8 @@ if trace_btn:
                     "Lon": t.get("lon", 0),
                     "TWI": t.get("twi_score", 0),
                     "Curvature": t.get("curvature_score", 0),
-                    "HMI": t.get("hmi_score", 0),
-                    "FSI": t.get("fsi_score", 0),
+                    "Wetness (TWI)": t.get("twi_score", 0),
+                    "Convergence (Curv)": t.get("curvature_score", 0),
                     "Struct": t.get("struct_score", 0)
                 })
             st.dataframe(target_data_st, use_container_width=True, hide_index=True)
